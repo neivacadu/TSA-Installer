@@ -41,7 +41,7 @@ jobs:
         working-directory: app
       - run: pnpm run verify:tsa-macos-release
         working-directory: app
-      - run: pnpm run build:mac
+      - run: TSA_ADHOC_SIGN=1 pnpm run build:mac
         working-directory: app
       - name: Verify and normalize macOS package
         shell: bash
@@ -81,8 +81,20 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.publish == true
     needs: [macos, windows]
     runs-on: ubuntu-latest
+    env:
+      TSA_RELEASE_STATE: DRAFT
+      TSA_RELEASE_VERSION: ${{ github.ref_name }}
+      TSA_RELEASE_CHANNEL: ${{ inputs.channel || 'adhoc' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPOSITORY }}
+          ref: ${{ env.APP_REF }}
+          path: app
+          token: ${{ secrets.TSA_APP_REPO_TOKEN }}
+      - name: Record immutable app commit
+        run: echo "TSA_APP_COMMIT=$(git -C app rev-parse HEAD)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with: { path: artifacts }
       - run: node scripts/generate-release-manifest.mjs
