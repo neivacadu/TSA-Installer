@@ -1,0 +1,87 @@
+name: TSA installer release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        type: choice
+        required: true
+        default: adhoc
+        options: [adhoc, rc, stable]
+      publish:
+        type: boolean
+        required: true
+        default: false
+  push:
+    tags: ['tsa-installer-v*.*.*', 'tsa-installer-v*.*.*-rc.*']
+
+permissions:
+  contents: write
+
+env:
+  APP_REPOSITORY: aifocusdev/AceOrca
+  APP_REF: tsa-installer/20260915
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPOSITORY }}
+          ref: ${{ env.APP_REF }}
+          path: app
+          token: ${{ secrets.TSA_APP_REPO_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with: { version: 12 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm, cache-dependency-path: app/pnpm-lock.yaml }
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - run: pnpm run verify:tsa-macos-release
+        working-directory: app
+      - run: pnpm run build:mac
+        working-directory: app
+      - run: mkdir -p artifacts && cp app/dist/*.dmg app/dist/*.zip artifacts/ || true
+      - uses: actions/upload-artifact@v4
+        with: { name: tsa-macos, path: artifacts/* }
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPOSITORY }}
+          ref: ${{ env.APP_REF }}
+          path: app
+          token: ${{ secrets.TSA_APP_REPO_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with: { version: 12 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm, cache-dependency-path: app/pnpm-lock.yaml }
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - run: pnpm run build:win
+        working-directory: app
+      - run: New-Item -ItemType Directory -Force artifacts; Copy-Item app/dist/*setup*.exe artifacts/ -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with: { name: tsa-windows, path: artifacts/* }
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - run: node scripts/generate-release-manifest.mjs
+      - run: node scripts/verify-manifest.mjs manifests/tsa-release.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            artifacts/**
+            manifests/tsa-release.json
