@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RELEASE_TAG="${TSA_RELEASE_TAG:-tsa-installer-v0.1.2-adhoc}"
+RELEASE_TAG="${TSA_RELEASE_TAG:-tsa-installer-v0.1.3-adhoc}"
 BASE_URL="https://github.com/neivacadu/TSA-Installer/releases/download/${RELEASE_TAG}"
 ARCH="$(uname -m)"
 case "$ARCH" in
