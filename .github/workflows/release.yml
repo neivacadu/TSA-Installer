@@ -43,6 +43,14 @@ jobs:
         working-directory: app
       - run: pnpm run build:mac
         working-directory: app
+      - name: Verify and normalize macOS package
+        shell: bash
+        run: |
+          while IFS= read -r bundle; do
+            codesign --deep --force --sign - "$bundle"
+            codesign --verify --deep --strict "$bundle"
+          done < <(find app/dist -maxdepth 3 -name TSA.app -print)
+          pnpm --dir app run prepare:tsa-macos-release
       - run: mkdir -p artifacts && cp app/dist/*.dmg app/dist/*.zip artifacts/ || true
       - uses: actions/upload-artifact@v4
         with: { name: tsa-macos, path: artifacts/* }
