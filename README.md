@@ -2,11 +2,11 @@
 
 Este diretório define o contrato do repositório privado que distribuirá o TSA para macOS e Windows.
 
-O repositório de distribuição publica instaladores do aplicativo. Ele não copia o DNA para uma pasta pública e não substitui o canal autenticado da Central. O aplicativo deve buscar o DNA pelo endpoint privado, validar a assinatura Ed25519 e conferir os hashes antes de aplicar qualquer pacote.
+O repositório de distribuição publica instaladores do aplicativo. Cada instalador já leva dentro do aplicativo o DNA aprovado, assinado e verificado na primeira execução. A Central fica como canal autenticado para atualizações futuras e contribuições.
 
 ## Estado atual
 
-`DRAFT`. O contrato está pronto para orientar o repositório instalador. Os artefatos e URLs de release só podem ser preenchidos depois que o pipeline de build gerar e verificar cada arquivo.
+O contrato orienta o repositório instalador. Os artefatos e URLs de release são preenchidos pelo pipeline de build depois da verificação de cada arquivo.
 
 O primeiro canal será macOS, com artefatos arm64, x64 e universal quando o runner e os testes permitirem. Windows permanece no mesmo contrato, com instalador x64 como primeiro alvo. Nenhum artefato é considerado publicado enquanto não houver hash, tamanho, assinatura do aplicativo e receipt de teste.
 
@@ -22,7 +22,7 @@ Para o release aprovado atual, os valores são:
 - Adaptadores: `tsa-codex-1`, `tsa-claude-1`
 - Endpoint privado: `https://ace.acetsia.com/inteligencia/v1/dna/release`
 
-O instalador não recebe token, chave privada ou conteúdo do envelope do DNA. A instalação registra apenas a configuração pública necessária para o primeiro contato autenticado; o token de instalação é criado e protegido pelo cofre do sistema durante a execução do TSA.
+O instalador não recebe token nem chave privada. O conteúdo assinado do DNA aprovado acompanha o aplicativo. O token da Central, quando necessário para atualizações, é criado e protegido pelo cofre do sistema durante a execução do TSA.
 
 ## Contrato
 
@@ -47,7 +47,7 @@ O pipeline não pode ativar campanhas, registrar credenciais em logs, publicar o
 
 Este diretório é o conteúdo do repositório privado `neivacadu/TSA-Installer`.
 
-Ele baixa uma referência imutável do aplicativo TSA no repositório `aifocusdev/AceOrca`, na branch de integração do TSA, e gera os artefatos. O DNA não é copiado para o instalador. O aplicativo recebe somente a configuração pública do endpoint e das chaves confiáveis, depois autentica e verifica o pacote durante a execução.
+Ele baixa uma referência imutável do aplicativo TSA no repositório `aifocusdev/AceOrca`, na branch de integração do TSA, e gera os artefatos. O build inclui o envelope assinado do DNA aprovado dentro do aplicativo. Na primeira execução, o TSA valida a assinatura e instala o DNA localmente antes de tentar qualquer atualização pela Central.
 
 O workflow `release.yml` tem três etapas:
 
@@ -57,4 +57,4 @@ O workflow `release.yml` tem três etapas:
 
 A publicação exige o segredo `TSA_APP_REPO_TOKEN` para ler o repositório privado do aplicativo. Assinatura Apple, notarização e Authenticode são gates separados. Sem essas credenciais, o workflow pode gerar artefato adhoc, mas não pode marcar um release como estável.
 
-O manifesto inicial permanece em `DRAFT` até haver instalador real, hash, tamanho e receipt de teste para cada artefato.
+O manifesto só deve ser publicado depois de haver instalador real, hash, tamanho e receipt de teste para cada artefato.
