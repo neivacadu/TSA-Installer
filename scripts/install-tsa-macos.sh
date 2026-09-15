@@ -22,6 +22,7 @@ ACTUAL="$(shasum -a 256 "$DMG" | awk '{print $1}')"
 MOUNT="$(hdiutil attach "$DMG" -nobrowse -readonly | sed -n 's#.*\t\(/Volumes/.*\)$#\1#p' | head -1)"
 [ -n "$MOUNT" ] || { echo "Não foi possível montar o instalador" >&2; exit 1; }
 APP_TARGET="/Applications/TSA Teste.app"
+rm -rf "$APP_TARGET"
 ditto "$MOUNT/TSA.app" "$APP_TARGET"
 codesign --verify --deep --strict "$APP_TARGET"
 PROFILE="$HOME/Library/Application Support/TSA Teste"
