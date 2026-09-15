@@ -12,9 +12,9 @@ esac
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tsa-install.XXXXXX")"
 cleanup() { [ -n "${MOUNT:-}" ] && hdiutil detach "$MOUNT" >/dev/null 2>&1 || true; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
+command -v gh >/dev/null || { echo "Instale o GitHub CLI e faça gh auth login antes de continuar" >&2; exit 1; }
 DMG="$TMP_DIR/$ARTIFACT"
-curl --fail --location --silent --show-error "$BASE_URL/$ARTIFACT" --output "$DMG"
-curl --fail --location --silent --show-error "$BASE_URL/checksums-sha256.txt" --output "$TMP_DIR/checksums-sha256.txt"
+gh release download "$RELEASE_TAG" --repo neivacadu/TSA-Installer --pattern "$ARTIFACT" --pattern checksums-sha256.txt --dir "$TMP_DIR" --clobber
 EXPECTED="$(awk -v name="$ARTIFACT" '$2 == name {print $1}' "$TMP_DIR/checksums-sha256.txt")"
 [ -n "$EXPECTED" ] || { echo "Checksum ausente para $ARTIFACT" >&2; exit 1; }
 ACTUAL="$(shasum -a 256 "$DMG" | awk '{print $1}')"
