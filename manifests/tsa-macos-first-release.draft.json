@@ -1,0 +1,23 @@
+{
+  "$schema": "../contracts/tsa-distribution-manifest-v1.schema.json",
+  "schema_version": "tsa.distribution.release/v1",
+  "state": "DRAFT",
+  "product": {
+    "name": "TSA",
+    "app_id": "com.trafegosa.orca-tsa"
+  },
+  "release": {
+    "version": "0.0.0",
+    "commit": "0000000000000000000000000000000000000000",
+    "channel": "candidate",
+    "created_at": "2026-09-15T00:00:00Z"
+  },
+  "dna": {
+    "source_repository": "https://github.com/neivacadu/DNA-ACE-TSA",
+    "approved_commit": "6c3d56d6209d54e8145997780433351f06b3f41b",
+    "release_version": "1.0.9-approved.20260915",
+    "manifest_url": "https://ace.acetsia.com/inteligencia/v1/dna/release",
+    "compatible_adapters": ["tsa-codex-1", "tsa-claude-1"]
+  },
+  "artifacts": []
+}

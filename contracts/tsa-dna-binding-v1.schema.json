@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ace.acetsia.com/schemas/tsa-dna-binding/v1.json",
+  "title": "TSA DNA binding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_repository",
+    "approved_commit",
+    "release_version",
+    "manifest_url",
+    "compatible_adapters"
+  ],
+  "properties": {
+    "source_repository": {
+      "type": "string",
+      "const": "https://github.com/neivacadu/DNA-ACE-TSA"
+    },
+    "approved_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "release_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-approved\\.[0-9]{8}$"
+    },
+    "manifest_url": {
+      "type": "string",
+      "const": "https://ace.acetsia.com/inteligencia/v1/dna/release"
+    },
+    "compatible_adapters": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["tsa-codex-1", "tsa-claude-1"]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  }
+}

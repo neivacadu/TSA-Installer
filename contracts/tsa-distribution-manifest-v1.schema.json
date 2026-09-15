@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ace.acetsia.com/schemas/tsa-distribution-manifest/v1.json",
+  "title": "TSA distribution release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "state", "product", "release", "dna", "artifacts"],
+  "properties": {
+    "schema_version": { "const": "tsa.distribution.release/v1" },
+    "state": { "enum": ["DRAFT", "PUBLISHED", "REVOKED"] },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "app_id"],
+      "properties": {
+        "name": { "const": "TSA" },
+        "app_id": { "const": "com.trafegosa.orca-tsa" }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "commit", "channel", "created_at"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "channel": { "enum": ["stable", "candidate", "adhoc"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "dna": {
+      "$ref": "tsa-dna-binding-v1.schema.json"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["platform", "architecture", "kind", "filename", "url", "sha512", "bytes"],
+        "properties": {
+          "platform": { "enum": ["darwin", "win32"] },
+          "architecture": { "enum": ["arm64", "x64", "universal"] },
+          "kind": { "enum": ["dmg", "zip", "nsis"] },
+          "filename": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+          "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+          "sha512": { "type": "string", "pattern": "^[A-Fa-f0-9]{128}$" },
+          "bytes": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "PUBLISHED" } } },
+      "then": { "properties": { "artifacts": { "minItems": 1 } } }
+    }
+  ]
+}

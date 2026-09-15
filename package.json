@@ -1,0 +1,10 @@
+{
+  "name": "tsa-installer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "verify": "node scripts/verify-manifest.mjs",
+    "manifest": "node scripts/generate-release-manifest.mjs"
+  }
+}

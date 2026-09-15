@@ -1,0 +1,6 @@
+artifacts/
+dist/
+*.log
+.DS_Store
+
+manifests/tsa-release.json
