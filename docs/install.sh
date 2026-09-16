@@ -5,7 +5,7 @@
 # e remove a quarentena. O DNA da TSA ja vai embutido e assinado dentro do app.
 set -euo pipefail
 
-RELEASE_TAG="${TSA_RELEASE_TAG:-tsa-installer-v0.1.3-adhoc}"
+RELEASE_TAG="${TSA_RELEASE_TAG:-tsa-installer-v0.2.0-adhoc}"
 BASE_URL="https://github.com/neivacadu/TSA-Installer/releases/download/${RELEASE_TAG}"
 APP_NAME="${TSA_APP_NAME:-TSA.app}"
 
