@@ -230,7 +230,8 @@ sed 's/^/    /' "$OUT/checksums-sha256.txt"
   node scripts/verify-manifest.mjs manifests/tsa-release.json
 )
 cp "$ROOT/manifests/tsa-release.json" "$OUT/tsa-release.json"
-N_ART="$(node -p "require('$OUT/tsa-release.json').artifacts.length")"
+# Why: node -p colors numbers when the build env sets FORCE_COLOR, so print plain text.
+N_ART="$(node -e "process.stdout.write(String(require('$OUT/tsa-release.json').artifacts.length))")"
 [ "$N_ART" = 4 ] || die "o manifesto tem $N_ART artefatos; esperava 4"
 ok "tsa-release.json com 4 artefatos"
 
