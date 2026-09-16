@@ -1,21 +1,12 @@
 import { createHash } from 'node:crypto'
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { join, relative, resolve } from 'node:path'
+import { readFile, stat, writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { walkFiles } from './dist-artifact-walk.mjs'
 
 const dist = resolve(process.env.TSA_DIST_DIR ?? 'artifacts')
 const policy = JSON.parse(await readFile(resolve('config/release-policy.json'), 'utf8'))
-async function walk(dir) {
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
-  const files = []
-  for (const entry of entries) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) files.push(...await walk(full))
-    else if (entry.isFile()) files.push(full)
-  }
-  return files
-}
 const artifacts = []
-for (const file of await walk(dist)) {
+for (const file of await walkFiles(dist)) {
   const filename = file.split(/[\\/]/).pop()
   const info = await stat(file)
   const isMac = /^tsa-macos-(arm64|x64|universal)\.(dmg|zip)$/.test(filename)

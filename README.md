@@ -57,4 +57,18 @@ O workflow `release.yml` tem três etapas:
 
 A publicação exige o segredo `TSA_APP_REPO_TOKEN` para ler o repositório privado do aplicativo. Assinatura Apple, notarização e Authenticode são gates separados. Sem essas credenciais, o workflow pode gerar artefato adhoc, mas não pode marcar um release como estável.
 
+### Ref imutável do app (APP_REF)
+
+O job `resolve-app-ref` recusa branch (mutável) e exige tag ou SHA completo do commit em
+`aifocusdev/AceOrca`. Todos os jobs (macOS, Windows, publish) usam o mesmo commit resolvido, e o
+publish falha se o commit realmente buildado divergir do registrado no manifesto.
+
+Como informar o ref:
+
+- Disparo manual (`workflow_dispatch`): preencha o input `app_ref` com uma tag (ex.
+  `tsa-installer/20260915-approved`) ou o SHA completo (40 hex) do commit aprovado.
+- Disparo por push de tag (`tsa-installer-v*.*.*`): não há input manual, então configure a
+  variável de repositório `TSA_APP_REF` em Settings -> Secrets and variables -> Actions ->
+  Variables, com o mesmo formato (tag ou SHA completo).
+
 O manifesto só deve ser publicado depois de haver instalador real, hash, tamanho e receipt de teste para cada artefato.
