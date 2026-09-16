@@ -97,12 +97,87 @@ Este diretório é o conteúdo do repositório privado `neivacadu/TSA-Installer`
 
 Ele baixa uma referência imutável do aplicativo TSA no repositório `aifocusdev/AceOrca`, na branch de integração do TSA, e gera os artefatos. O build inclui o envelope assinado do DNA aprovado dentro do aplicativo. Na primeira execução, o TSA valida a assinatura e instala o DNA localmente antes de tentar qualquer atualização pela Central.
 
-O workflow `release.yml` tem três etapas:
+O workflow `release.yml` roda só macOS, porque o Windows está fora por decisão do Cadu. Ele compila o app a partir de `aifocusdev/AceOrca` na branch `tsa/integracao` e chama `scripts/publicar-release.sh --sem-build`. Sem a opção `publish`, é só ensaio, e os artefatos ficam no upload do job.
 
-1. compilar macOS arm64 e x64;
-2. compilar Windows x64;
-3. gerar e validar o manifesto, com publicação sempre como rascunho.
+**Ressalva:** hoje a branch `tsa/integracao` só existe nos clones locais. Enquanto ela não for enviada ao `aifocusdev/AceOrca`, o checkout do workflow falha. Até lá, publique pelo script local (seção abaixo).
 
-A publicação exige o segredo `TSA_APP_REPO_TOKEN` para ler o repositório privado do aplicativo. Assinatura Apple, notarização e Authenticode são gates separados. Sem essas credenciais, o workflow pode gerar artefato adhoc, mas não pode marcar um release como estável.
+O workflow exige o segredo `TSA_APP_REPO_TOKEN` para ler o repositório privado do aplicativo. Assinatura Apple, notarização e Authenticode são gates separados. Sem essas credenciais, os artefatos são ad-hoc e saem como pre-release, nunca como release estável.
 
 O manifesto só deve ser publicado depois de haver instalador real, hash, tamanho e receipt de teste para cada artefato.
+
+## Publicar uma versão
+
+O script `scripts/publicar-release.sh` faz o release do macOS de ponta a ponta. Ele precisa de três coisas:
+
+- o `gh` logado com escrita em `neivacadu/TSA-Installer`;
+- um clone do AceOrca na branch `tsa/integracao`, com a árvore limpa;
+- uma tag `tsa-installer-v<versão>-adhoc` que ainda não exista.
+
+### 1. Ensaio (padrão)
+
+Sem `--publicar`, o script não publica nada. Ele roda estes passos:
+
+1. faz o build do app: `pnpm install --frozen-lockfile`, `verify:tsa-macos-release`, `TSA_ADHOC_SIGN=1 pnpm run build:mac` e `prepare:tsa-macos-release`;
+2. escolhe os DMGs e os zips pelo `dist/latest-mac.yml` e confere o sha512 de cada um;
+3. monta cada DMG e confere o `TSA.app`:
+   - `codesign --verify --deep --strict`;
+   - bundle id, versão e arquitetura do binário;
+   - `Contents/Resources/tsa` com `simulador`, `gsd` e `dna-embedded-release.json`;
+   - `ace-skills` e `ace-knowledge`, quando existirem;
+   - DNA embutido igual ao de `config/release-policy.json`;
+4. gera `checksums-sha256.txt` e o manifesto `tsa-release.json`, numa pasta temporária;
+5. mostra a troca da `RELEASE_TAG` no `docs/install.sh`, o que publicaria e as notas da release.
+
+```bash
+scripts/publicar-release.sh 0.3.0 --app ../integracao
+```
+
+`--sem-build` reaproveita o `dist/` que já existe, sem rodar o build nem o `prepare`. Serve para testar o script. A lista de recursos exigidos fica no topo do script, em `RECURSOS_OBRIGATORIOS` e `RECURSOS_OPCIONAIS`.
+
+O ensaio também lista o que ainda bloqueia a publicação: branch diferente de `main`, árvore suja, repositório privado ou Pages desligado.
+
+### 2. Abrir o repositório
+
+O `install.sh` e os downloads só funcionam com o repositório público. O script nunca muda a visibilidade sozinho.
+
+```bash
+gh repo edit neivacadu/TSA-Installer --visibility public --accept-visibility-change-consequences
+# se o Pages estiver desligado (gh api repos/neivacadu/TSA-Installer/pages responde 404):
+gh api -X POST repos/neivacadu/TSA-Installer/pages -f 'source[branch]=main' -f 'source[path]=/docs'
+```
+
+### 3. Publicar
+
+Rode na branch `main` do instalador, com a árvore limpa:
+
+```bash
+scripts/publicar-release.sh 0.3.0 --app ../integracao --publicar
+```
+
+O script repete tudo o que o ensaio faz. Depois:
+
+1. commita a nova `RELEASE_TAG` no `docs/install.sh`;
+2. cria a pre-release com os dois DMGs, os dois zips, `checksums-sha256.txt` e `tsa-release.json`;
+3. envia a `main`.
+
+A release sai antes do push. Assim, o `install.sh` publicado nunca aponta para uma tag que ainda não existe.
+
+### 4. Conferir
+
+Com `--publicar`, o script espera o Pages servir o `install.sh` com a tag nova, por até 15 minutos (`TSA_PAGES_TIMEOUT`). Depois baixa o `checksums-sha256.txt` da release e compara com os DMGs locais. Para conferir à mão:
+
+```bash
+curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | grep RELEASE_TAG
+curl -fsSL https://github.com/neivacadu/TSA-Installer/releases/download/tsa-installer-v0.3.0-adhoc/checksums-sha256.txt
+curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | TSA_ONLY_PREREQS=1 bash
+```
+
+### 5. Fechar o repositório
+
+Depois que o time instalar:
+
+```bash
+gh repo edit neivacadu/TSA-Installer --visibility private --accept-visibility-change-consequences
+```
+
+Com o repositório privado, o `curl` do instalador volta a responder 404 e ninguém novo consegue instalar.

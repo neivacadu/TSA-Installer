@@ -2,7 +2,7 @@
   "schema": "tsa.installer.policy/v1",
   "product": "TSA",
   "appRepository": "aifocusdev/AceOrca",
-  "appRef": "tsa-installer/20260915",
+  "appRef": "tsa/integracao",
   "dnaRepository": "neivacadu/DNA-ACE-TSA",
   "dnaApprovedCommit": "6c3d56d6209d54e8145997780433351f06b3f41b",
   "dnaReleaseVersion": "1.0.9-approved.20260915",
