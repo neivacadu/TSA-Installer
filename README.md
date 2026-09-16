@@ -2,6 +2,48 @@
 
 Este diretório define o contrato do repositório privado que distribuirá o TSA para macOS e Windows.
 
+## Instalar no Mac
+
+Rode no app Terminal:
+
+```bash
+curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | bash
+```
+
+Você não precisa de conta no GitHub nem do `gh`. O instalador faz duas coisas.
+
+1. **Instala o app.** Ele baixa o TSA do release público, confere o SHA-256, copia o app para Aplicativos e remove a quarentena. O DNA da TSA já vem dentro do app.
+2. **Prepara o Mac para o simulador ACE.** O simulador vai dentro do app e precisa de três coisas:
+   - Python 3.10 ou mais (recomendado: 3.14);
+   - Node;
+   - PostgreSQL ligado, em que o seu usuário rode `psql -l` e `createdb` sem senha.
+
+   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node` e `postgresql@16`. Ele liga o PostgreSQL 16 com `brew services`. O que já existe fica como está. O instalador não roda `brew upgrade` e não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
+
+Se o Mac não tem Homebrew, o instalador baixa o instalador oficial do Homebrew. **Nesse caso o Mac pode pedir a sua senha.** É a senha que você usa para entrar no Mac.
+
+Se o PostgreSQL já existe mas está desligado, o instalador não instala outro. Ele mostra o comando para ligar.
+
+No fim aparece um resumo com o que ficou pronto e o que falta, com o comando para resolver cada item. Uma falha nessa preparação não desfaz o app.
+
+Rodar o instalador de novo é seguro: o que já está pronto não é reinstalado nem atualizado.
+
+### Controles
+
+| Variável | Efeito |
+|---|---|
+| `TSA_SKIP_PREREQS=1` | Instala só o app e pula a preparação do simulador. |
+| `TSA_ONLY_PREREQS=1` | Roda só a preparação do simulador, sem baixar nem instalar o app. Serve para conferir uma máquina que já tem o TSA. Sai com código 1 se faltar algo. |
+
+```bash
+curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | TSA_SKIP_PREREQS=1 bash
+curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | TSA_ONLY_PREREQS=1 bash
+```
+
+O teste da preparação roda sem instalar nada, com binários falsos: `bash scripts/test-install-prereqs.sh`.
+
+`scripts/install-tsa-macos.sh` é legado: exige `gh` autenticado e aponta para o release antigo. Use `docs/install.sh`.
+
 O repositório de distribuição publica instaladores do aplicativo. Cada instalador já leva dentro do aplicativo o DNA aprovado, assinado e verificado na primeira execução. A Central fica como canal autenticado para atualizações futuras e contribuições.
 
 ## Estado atual
