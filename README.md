@@ -20,9 +20,15 @@ Você não precisa de conta no GitHub nem do `gh`. O instalador faz duas coisas.
 
    O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node` e `postgresql@16`. Ele liga o PostgreSQL 16 com `brew services`. O que já existe fica como está. O instalador não roda `brew upgrade` e não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
 
-Se o Mac não tem Homebrew, o instalador baixa o instalador oficial do Homebrew. **Nesse caso o Mac pode pedir a sua senha.** É a senha que você usa para entrar no Mac.
+Se o Mac não tem Homebrew, o instalador baixa o instalador oficial do Homebrew. **Nesse caso o Mac pode pedir a sua senha.** É a senha que você usa para entrar no Mac. O instalador do Homebrew também pede para apertar Enter antes de começar. Ele pode instalar as ferramentas de linha de comando da Apple, o que leva alguns minutos.
 
-Se o PostgreSQL já existe mas está desligado, o instalador não instala outro. Ele mostra o comando para ligar.
+O instalador não instala um segundo PostgreSQL. Antes de instalar, ele procura o que já existe:
+
+- se o `psql` existe mas o servidor está desligado, mostra o comando para ligar;
+- se acha o app Postgres, outra versão do PostgreSQL no Homebrew ou a porta 5432 em uso, não instala nada e mostra como pôr o `psql` no PATH;
+- se o `postgresql@16` já foi instalado antes e está fora do PATH, só acrescenta o caminho dele no PATH.
+
+O `postgresql@16` instalado agora ganha `brew link --force`, para que `psql` e `createdb` fiquem no mesmo lugar dos outros programas do Homebrew. Se o link der conflito, o instalador usa o PATH. Uma alteração no `~/.zprofile` só acontece quando é necessária, e nunca se repete.
 
 No fim aparece um resumo com o que ficou pronto e o que falta, com o comando para resolver cada item. Uma falha nessa preparação não desfaz o app.
 

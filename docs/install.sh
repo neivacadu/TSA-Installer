@@ -8,7 +8,8 @@
 # Controles:
 #   TSA_SKIP_PREREQS=1  instala so o app, sem preparar o simulador.
 #   TSA_ONLY_PREREQS=1  so prepara o simulador, sem baixar nem instalar o app.
-# O script inteiro fica dentro de main(): com curl | bash, o bash le tudo antes de rodar.
+# Tudo fica em funcoes e so roda na chamada de main na ultima linha. Com curl | bash,
+# um download cortado no meio nao executa pela metade: sem a ultima linha, nada roda.
 set -euo pipefail
 
 RELEASE_TAG="${TSA_RELEASE_TAG:-tsa-installer-v0.2.0-adhoc}"
@@ -23,6 +24,9 @@ PG_FORMULA="postgresql@16"
 TTY_DEV="${TSA_TTY-/dev/tty}"
 BREW_CANDIDATES="${TSA_BREW_CANDIDATES-/opt/homebrew/bin/brew /usr/local/bin/brew}"
 PG_WAIT="${TSA_PG_WAIT:-30}"
+PG_PORT="${TSA_PG_PORT:-5432}"
+POSTGRES_APP="${TSA_POSTGRES_APP:-/Applications/Postgres.app}"
+SYS_PYTHON="${TSA_SYS_PYTHON:-/usr/bin/python3}"
 
 TMP_DIR=""
 MOUNT=""
@@ -94,6 +98,7 @@ PENDING_N=0
 BREW=""
 BREW_FAILED=0
 BREW_OFF_PATH=0
+BREW_PREFIX=""
 
 mark_ok(){ READY="${READY}  ✓ $1"$'\n'; }
 mark_fail(){
@@ -104,7 +109,12 @@ mark_fail(){
 # Com curl | bash a entrada padrao e o script. Pergunta e sudo so leem do terminal.
 has_tty(){ [ -n "$TTY_DEV" ] && { : <"$TTY_DEV"; } 2>/dev/null; }
 
-brew_prefix(){ dirname "$(dirname "$BREW")"; }
+# Preenche BREW_PREFIX uma vez. Chamar fora de $(...), senao o valor se perde no subshell.
+load_brew_prefix(){
+  [ -n "$BREW_PREFIX" ] && return 0
+  BREW_PREFIX="$("$BREW" --prefix </dev/null 2>/dev/null || true)"
+  [ -n "$BREW_PREFIX" ] || BREW_PREFIX="$(dirname "$(dirname "$BREW")")"
+}
 
 # Acha o brew sem instalar. Se ele existe mas esta fora do PATH, carrega o shellenv.
 find_brew(){
@@ -177,7 +187,7 @@ find_python(){
   for n in python3 python3.15 python3.14 python3.13 python3.12 python3.11 python3.10; do
     p="$(command -v "$n" 2>/dev/null)" || continue
     # sem as ferramentas de linha de comando, /usr/bin/python3 abre um aviso do macOS
-    if [ "$p" = /usr/bin/python3 ] && ! xcode-select -p >/dev/null 2>&1; then continue; fi
+    if [ "$p" = "$SYS_PYTHON" ] && ! xcode-select -p >/dev/null 2>&1; then continue; fi
     if "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' </dev/null >/dev/null 2>&1; then
       PY_FOUND="$p"
       return 0
@@ -237,36 +247,91 @@ pg_start_hint(){
   echo "brew services start $f"
 }
 
-# postgresql@16 e keg-only: psql e createdb nao entram no bin do brew sozinhos.
-# Escolha: brew link --force. Assim eles ficam no mesmo bin que o shellenv do brew ja
-# coloca no PATH, sem outra linha no .zprofile. Se o link der conflito (outro psql
-# ligado), cai para o PATH: sessao atual mais uma linha idempotente no .zprofile.
-pg_make_reachable(){
-  local pre kegbin
-  pre="$(brew_prefix)"
-  kegbin="$pre/opt/$PG_FORMULA/bin"
-  if "$BREW" link --force "$PG_FORMULA" </dev/null >/dev/null 2>&1; then
-    persist_brew_env
-  else
-    warn "brew link de $PG_FORMULA deu conflito; usando o PATH."
-    grep -qsF "$kegbin" "$HOME/.zprofile" ||
-      printf '\nexport PATH="%s:$PATH"\n' "$kegbin" >>"$HOME/.zprofile"
-  fi
-  case ":$PATH:" in *":$kegbin:"*) ;; *) export PATH="$kegbin:$PATH" ;; esac
+# Poe um bin do PostgreSQL no PATH: na sessao atual e numa linha idempotente do .zprofile.
+pg_use_path(){
+  local bin="$1"
+  grep -qsF "$bin" "$HOME/.zprofile" ||
+    printf '\nexport PATH="%s:$PATH"\n' "$bin" >>"$HOME/.zprofile"
+  case ":$PATH:" in *":$bin:"*) ;; *) export PATH="$bin:$PATH" ;; esac
   hash -r
 }
 
-ensure_postgres(){
-  local keg_found=0 i
-  if ! command -v psql >/dev/null 2>&1 && find_brew && [ -x "$(brew_prefix)/opt/$PG_FORMULA/bin/psql" ]; then
-    # ja instalado antes, mas sem link: nao reinstala, so torna acessivel
-    export PATH="$(brew_prefix)/opt/$PG_FORMULA/bin:$PATH"
+# So para o postgresql@16 instalado agora. Ele e keg-only: psql e createdb nao entram
+# no bin do brew sozinhos. Escolha: brew link --force, que poe os dois no bin que o
+# shellenv do brew ja coloca no PATH, sem outra linha no .zprofile. Se o link der
+# conflito (outro psql ligado), cai para o PATH.
+pg_link_new_install(){
+  load_brew_prefix
+  local kegbin="$BREW_PREFIX/opt/$PG_FORMULA/bin"
+  if "$BREW" link --force "$PG_FORMULA" </dev/null >/dev/null 2>&1; then
+    persist_brew_env
+    case ":$PATH:" in *":$kegbin:"*) ;; *) export PATH="$kegbin:$PATH" ;; esac
     hash -r
-    keg_found=1
+  else
+    warn "brew link de $PG_FORMULA deu conflito; usando o PATH."
+    pg_use_path "$kegbin"
+  fi
+}
+
+# Algum servidor na porta? Diz o bin do psql dele quando consegue achar.
+PG_PORT_BIN=""
+pg_port_busy(){
+  local pid bin
+  PG_PORT_BIN=""
+  pid="$(/usr/sbin/lsof -nP -t -iTCP:"$PG_PORT" -sTCP:LISTEN 2>/dev/null </dev/null | head -1)"
+  if [ -n "$pid" ]; then
+    bin="$(/bin/ps -o comm= -p "$pid" 2>/dev/null | head -1)"
+    case "$bin" in
+      /*) bin="$(dirname "$bin")"; [ -x "$bin/psql" ] && PG_PORT_BIN="$bin" ;;
+    esac
+    return 0
+  fi
+  /usr/bin/nc -z 127.0.0.1 "$PG_PORT" </dev/null >/dev/null 2>&1
+}
+
+# Antes de instalar: existe outro PostgreSQL nesta maquina? Se existe, nao instala.
+pg_found_elsewhere(){
+  local k fix
+  if [ -n "$BREW" ]; then
+    load_brew_prefix
+    for k in "$BREW_PREFIX"/opt/postgresql*/bin/psql; do
+      [ -x "$k" ] || continue
+      k="$(dirname "$k")"
+      mark_fail "PostgreSQL: ja existe um PostgreSQL do Homebrew fora do PATH ($k)." \
+        "echo 'export PATH=\"$k:\$PATH\"' >> ~/.zprofile, abra um Terminal novo e ligue com: brew services start $(basename "$(dirname "$k")")"
+      return 0
+    done
+  fi
+  if [ -d "$POSTGRES_APP" ]; then
+    k="$POSTGRES_APP/Contents/Versions/latest/bin"
+    mark_fail "PostgreSQL: o app Postgres ja esta instalado ($POSTGRES_APP), mas o psql nao esta no PATH." \
+      "abra o app Postgres, ligue o servidor e rode: echo 'export PATH=\"$k:\$PATH\"' >> ~/.zprofile"
+    return 0
+  fi
+  if pg_port_busy; then
+    if [ -n "$PG_PORT_BIN" ]; then
+      fix="echo 'export PATH=\"$PG_PORT_BIN:\$PATH\"' >> ~/.zprofile e abra um Terminal novo"
+    else
+      fix="descubra qual programa usa a porta com: lsof -nP -iTCP:$PG_PORT -sTCP:LISTEN e ponha o psql dele no PATH"
+    fi
+    mark_fail "PostgreSQL: a porta $PG_PORT ja esta em uso, mas o psql nao esta no PATH." "$fix"
+    return 0
+  fi
+  return 1
+}
+
+ensure_postgres(){
+  local kegbin="" i ver
+  if ! command -v psql >/dev/null 2>&1 && [ -n "$BREW" ]; then
+    load_brew_prefix
+    kegbin="$BREW_PREFIX/opt/$PG_FORMULA/bin"
+    if [ -x "$kegbin/psql" ]; then
+      # ja instalado antes, sem link: nao reinstala nem linka, so usa o PATH
+      pg_use_path "$kegbin"
+    fi
   fi
 
   if command -v psql >/dev/null 2>&1; then
-    [ "$keg_found" = 1 ] && pg_make_reachable
     if pg_list_ok; then
       mark_ok "PostgreSQL: ja estava ligado (psql -l responde)"
     elif command -v pg_isready >/dev/null 2>&1 && pg_isready -q </dev/null >/dev/null 2>&1; then
@@ -278,6 +343,8 @@ ensure_postgres(){
     return 0
   fi
 
+  pg_found_elsewhere && return 0
+
   local fix="brew install $PG_FORMULA && brew services start $PG_FORMULA"
   if ! ensure_brew; then
     mark_fail "PostgreSQL 16: nao encontrado." "instale o Homebrew e rode: $fix"
@@ -287,7 +354,7 @@ ensure_postgres(){
     mark_fail "PostgreSQL 16: a instalacao falhou." "$fix"
     return 1
   fi
-  pg_make_reachable
+  pg_link_new_install
   say "Ligando o PostgreSQL 16..."
   if ! "$BREW" services start "$PG_FORMULA" </dev/null; then
     mark_fail "PostgreSQL 16: instalado, mas nao ligou." "brew services start $PG_FORMULA"
@@ -297,16 +364,25 @@ ensure_postgres(){
     pg_isready -q </dev/null >/dev/null 2>&1 && break
     sleep 1
   done
-  if PGCONNECT_TIMEOUT=5 psql -w -d postgres -c 'select 1' </dev/null >/dev/null 2>&1; then
-    mark_ok "PostgreSQL 16: instalado e ligado"
-  else
+  if ! PGCONNECT_TIMEOUT=5 psql -w -d postgres -c 'select 1' </dev/null >/dev/null 2>&1; then
     mark_fail "PostgreSQL 16: instalado, mas nao respondeu em ${PG_WAIT} s." \
       "brew services restart $PG_FORMULA"
+    return 1
   fi
+  # Confere que quem respondeu e o 16 instalado agora, e nao outro servidor.
+  ver="$(PGCONNECT_TIMEOUT=5 psql -w -d postgres -tAc 'show server_version_num' </dev/null 2>/dev/null || true)"
+  case "$ver" in
+    16*) mark_ok "PostgreSQL 16: instalado e ligado" ;;
+    *) mark_fail "PostgreSQL 16: instalado, mas quem respondeu foi outro servidor (versao ${ver:-desconhecida})." \
+         "confira com: psql -d postgres -c 'show server_version' e desligue o servidor antigo" ;;
+  esac
 }
 
 prepare_simulator(){
   say "Preparando o Mac para o simulador ACE..."
+  # brew fora do PATH (segunda execucao na mesma janela): carrega o shellenv antes de
+  # procurar Python e Node, para achar o que o brew ja instalou.
+  find_brew || true
   ensure_python || true
   ensure_node || true
   ensure_postgres || true
