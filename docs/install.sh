@@ -3,9 +3,10 @@
 #   curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | bash
 # 1. Baixa o app do release publico, confere o SHA-256, instala e remove a quarentena.
 #    O DNA da TSA ja vai embutido e assinado dentro do app.
-# 2. Prepara o Mac para o simulador ACE e para a leitura de midia: Python 3.10+, Node,
-#    PostgreSQL ligado, ffmpeg, Antigravity CLI (agy), yt-dlp, whisper-cpp, o modelo de
-#    transcricao e o Handy. So instala o que falta, e so atualiza o yt-dlp velho.
+# 2. Prepara o Mac para o simulador ACE, para a leitura de midia e para o ACE Audiovisual:
+#    Python 3.10+, Node, PostgreSQL ligado, ffmpeg (com o filtro drawtext), pillow,
+#    Antigravity CLI (agy), yt-dlp, whisper-cpp, o modelo de transcricao, o Handy e o
+#    VoiceStudio. So instala o que falta, e so atualiza o yt-dlp velho.
 #    Falha aqui nao desfaz o app. O login do agy e do colaborador, nunca do script.
 # Controles:
 #   TSA_SKIP_PREREQS=1  instala so o app, sem preparar o simulador.
@@ -44,8 +45,30 @@ MODELO_CMD="curl -fsSL $INSTALL_URL | TSA_ONLY_PREREQS=1 TSA_BAIXAR_MODELO=1 bas
 HANDY_APP="${TSA_HANDY_APP:-/Applications/Handy.app}"
 HANDY_PERMISSOES="abra o Handy uma vez, conceda Microfone e Acessibilidade em Ajustes do Sistema e escolha o atalho de teclado"
 
+# ---- ACE Audiovisual
+# A formula ffmpeg do brew vem sem freetype desde a 9.x, e sem freetype nao existe o
+# filtro drawtext, que escreve texto na tela. Quem traz o drawtext e a ffmpeg-full.
+FFMPEG_FULL_FORMULA="ffmpeg-full"   # keg-only: nao entra no bin do brew sozinha
+# A formula pillow poe o PIL no site-packages do Python do brew, nunca no do sistema.
+PILLOW_FORMULA="pillow"
+# VoiceStudio: clonagem de voz e dublagem local. App separado e AGPL, roda fora do TSA
+# e nunca entra dentro dele. Existem repositorios falsos com o mesmo nome distribuindo
+# binario com malware: so o endereco abaixo vale, e o DMG so entra depois do sha256.
+VS_REPO="debpalash/VoiceStudio"
+VS_TAG="${TSA_VS_TAG:-v0.5.3}"
+VS_DMG="${TSA_VS_DMG:-VoiceStudio_0.5.3_aarch64.dmg}"
+VS_SUMS="${TSA_VS_SUMS:-SHA256SUMS-macOS.Apple.Silicon.txt}"
+VS_SHA256="${TSA_VS_SHA256:-8528ce1db299efa87db0072dc6a80152c3f4c753314194a02794215a564b1b84}"
+VS_BASE_URL="${TSA_VS_BASE_URL:-https://github.com/$VS_REPO/releases/download/$VS_TAG}"
+VS_APP="${TSA_VS_APP:-/Applications/VoiceStudio.app}"
+VS_PRIMEIRO_USO="na primeira vez ele baixa um ambiente Python de cerca de 1,8 GB, o que leva de 5 a 10 minutos; isso acontece dentro do app, nao aqui no instalador"
+VS_GATEKEEPER="ele e assinado ad-hoc, sem Team ID da Apple; se o macOS recusar abrir, clique com o botao direito no app, Abrir, Abrir"
+VS_MANUAL="baixe $VS_DMG so em https://github.com/$VS_REPO/releases e confira o sha256 com o arquivo $VS_SUMS da mesma release"
+
 TMP_DIR=""
 MOUNT=""
+VS_TMP=""
+VS_MOUNT=""
 
 say(){ printf '\033[0;36m%s\033[0m\n' "$1"; }
 ok(){ printf '  \033[0;32m✓\033[0m %s\n' "$1"; }
@@ -54,7 +77,9 @@ die(){ printf '\033[0;31m✗ %s\033[0m\n' "$1" >&2; exit 1; }
 
 cleanup(){
   if [ -n "$MOUNT" ]; then hdiutil detach "$MOUNT" >/dev/null 2>&1 || true; fi
+  if [ -n "$VS_MOUNT" ]; then hdiutil detach "$VS_MOUNT" >/dev/null 2>&1 || true; fi
   if [ -n "$TMP_DIR" ]; then rm -rf "$TMP_DIR"; fi
+  if [ -n "$VS_TMP" ]; then rm -rf "$VS_TMP"; fi
 }
 trap cleanup EXIT
 
@@ -271,6 +296,158 @@ ensure_ffmpeg(){
   else
     mark_fail "ffmpeg: a instalacao falhou." "brew install ffmpeg"
   fi
+}
+
+ffmpeg_tem_drawtext(){ ffmpeg -hide_banner -filters </dev/null 2>/dev/null | grep -qw drawtext; }
+
+# drawtext e o filtro que escreve texto na tela, e ele so existe quando o ffmpeg foi
+# compilado com freetype. A formula ffmpeg do brew nao traz freetype: quem traz e a
+# ffmpeg-full, que e keg-only e nao entra no bin do brew sozinha. Por isso o bin dela
+# vai para a frente do PATH, igual ao postgresql@16. Faltar drawtext e aviso, nao
+# pendencia: o pillow cobre o caso gerando o texto como imagem.
+ensure_drawtext(){
+  if ffmpeg_tem_drawtext; then
+    mark_ok "ffmpeg com o filtro drawtext: ja estava pronto"
+    return 0
+  fi
+  local fix="brew install $FFMPEG_FULL_FORMULA"
+  local falta="ffmpeg sem o filtro drawtext: nao da para escrever texto na tela pelo ffmpeg; o texto sai como imagem pelo pillow."
+  if ! ensure_brew; then
+    mark_aviso "$falta" "instale o Homebrew e rode: $fix"
+    return 1
+  fi
+  load_brew_prefix
+  local kegbin="$BREW_PREFIX/opt/$FFMPEG_FULL_FORMULA/bin"
+  # ja instalada antes, so fora do PATH: nao reinstala
+  if [ ! -x "$kegbin/ffmpeg" ]; then
+    brew_install "$FFMPEG_FULL_FORMULA" || true
+  fi
+  if [ -x "$kegbin/ffmpeg" ]; then
+    path_persistente "$kegbin"
+  fi
+  if ffmpeg_tem_drawtext; then
+    mark_ok "ffmpeg com o filtro drawtext: instalado pela formula $FFMPEG_FULL_FORMULA ($kegbin)"
+  else
+    mark_aviso "$falta" "$fix"
+  fi
+}
+
+# Onde o pillow esta importavel: no Python que o script achou ou no Python do brew.
+PIL_PY=""
+find_pillow(){
+  local p prefix="$BREW_PREFIX"
+  PIL_PY=""
+  # so olha, nunca chama o brew: uma conferencia nao pode mexer na maquina
+  if [ -z "$prefix" ] && [ -n "$BREW" ]; then prefix="$(dirname "$(dirname "$BREW")")"; fi
+  for p in "$PY_FOUND" "$prefix/opt/$PY_FORMULA/libexec/bin/python"; do
+    [ -n "$p" ] && [ -x "$p" ] || continue
+    if "$p" -c 'import PIL' </dev/null >/dev/null 2>&1; then
+      PIL_PY="$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Escreve o texto como imagem quando o ffmpeg nao tem drawtext. A formula pillow do brew
+# instala no site-packages do Python do brew, entao o Python do sistema fica intocado.
+ensure_pillow(){
+  if find_pillow; then
+    mark_ok "pillow (texto como imagem): ja estava pronto ($PIL_PY)"
+    return 0
+  fi
+  local fix="brew install $PILLOW_FORMULA"
+  if ! ensure_brew; then
+    mark_fail "pillow (texto como imagem): nao encontrado." "instale o Homebrew e rode: $fix"
+    return 1
+  fi
+  if brew_install "$PILLOW_FORMULA" && find_pillow; then
+    mark_ok "pillow (texto como imagem): instalado ($PIL_PY)"
+  else
+    mark_fail "pillow (texto como imagem): a instalacao falhou." "$fix"
+  fi
+}
+
+# VoiceStudio: app separado, ferramenta da pessoa igual ao Handy, entao faltar e aviso e
+# nunca pendencia. Nada e instalado sem o sha256 bater duas vezes: primeiro o sha256 que
+# a release publica, depois o sha256 do arquivo que chegou. Qualquer diferenca recusa.
+ensure_voicestudio(){
+  if [ -d "$VS_APP" ]; then
+    mark_ok "VoiceStudio (clonagem de voz e dublagem): ja estava pronto"
+    mark_aviso "VoiceStudio: $VS_PRIMEIRO_USO"
+    return 0
+  fi
+  local dest publicado atual src sums dmg
+  dest="$(dirname "$VS_APP")"
+  if [ ! -d "$dest" ] || [ ! -w "$dest" ]; then
+    mark_aviso "VoiceStudio: nao da para escrever em $dest." "$VS_MANUAL"
+    return 1
+  fi
+  if [ "$(uname -m)" != "arm64" ]; then
+    mark_aviso "VoiceStudio: so o pacote Apple Silicon foi conferido pela TSA." "$VS_MANUAL"
+    return 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    mark_aviso "VoiceStudio: nao instalado e sem curl para baixar." "$VS_MANUAL"
+    return 1
+  fi
+  VS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/tsa-voicestudio.XXXXXX")" || true
+  if [ -z "$VS_TMP" ]; then
+    mark_aviso "VoiceStudio: nao deu para criar a pasta temporaria." "$VS_MANUAL"
+    return 1
+  fi
+  sums="$VS_TMP/$VS_SUMS"
+  dmg="$VS_TMP/$VS_DMG"
+
+  say "Conferindo o sha256 que a release $VS_TAG do VoiceStudio publica..."
+  if ! curl -fsSL --max-time 60 "$VS_BASE_URL/$VS_SUMS" -o "$sums" </dev/null; then
+    mark_aviso "VoiceStudio: $VS_SUMS da release $VS_TAG nao baixou." "$VS_MANUAL"
+    return 1
+  fi
+  publicado="$(awk -v n="$VS_DMG" '$2==n{print $1}' "$sums" 2>/dev/null | head -1 || true)"
+  if [ "$publicado" != "$VS_SHA256" ]; then
+    mark_aviso "VoiceStudio: o sha256 de $VS_DMG na release (${publicado:-ausente}) nao e o que a TSA conferiu; nao baixei o DMG." \
+      "existe copia falsa deste projeto com malware: avise o suporte TSA antes de instalar por fora"
+    return 1
+  fi
+  say "Baixando o VoiceStudio $VS_TAG (102 MB)..."
+  if ! curl -fL --progress-bar --max-time 900 "$VS_BASE_URL/$VS_DMG" -o "$dmg" </dev/null; then
+    mark_aviso "VoiceStudio: o download de $VS_DMG nao terminou." "$VS_MANUAL"
+    return 1
+  fi
+  atual="$(shasum -a 256 "$dmg" 2>/dev/null | awk '{print $1}' || true)"
+  if [ "$atual" != "$VS_SHA256" ]; then
+    rm -f "$dmg"
+    mark_aviso "VoiceStudio: o sha256 do arquivo baixado (${atual:-nao calculado}) nao bateu; apaguei o DMG e nao instalei." \
+      "existe copia falsa deste projeto com malware: avise o suporte TSA antes de instalar por fora"
+    return 1
+  fi
+  ok "VoiceStudio: sha256 conferido na release e no arquivo"
+
+  say "Instalando o VoiceStudio..."
+  # O hdiutil lista uma linha por particao, com os campos separados por tabulacao. O
+  # ponto de montagem e o ultimo campo da ultima linha que tem caminho.
+  VS_MOUNT="$(hdiutil attach "$dmg" -nobrowse -readonly </dev/null 2>/dev/null | awk -F'\t' '$NF ~ "^/" {m=$NF} END{print m}' || true)"
+  if [ -z "$VS_MOUNT" ]; then
+    mark_aviso "VoiceStudio: nao foi possivel montar $VS_DMG." "$VS_MANUAL"
+    return 1
+  fi
+  src="$(find "$VS_MOUNT" -maxdepth 1 -name '*.app' 2>/dev/null | head -1 || true)"
+  if [ -z "$src" ]; then
+    mark_aviso "VoiceStudio: nenhum .app dentro de $VS_DMG." "$VS_MANUAL"
+    return 1
+  fi
+  rm -rf "$VS_APP"
+  if ! ditto "$src" "$VS_APP"; then
+    mark_aviso "VoiceStudio: a copia para $VS_APP falhou." "$VS_MANUAL"
+    return 1
+  fi
+  hdiutil detach "$VS_MOUNT" >/dev/null 2>&1 || true
+  VS_MOUNT=""
+  xattr -dr com.apple.quarantine "$VS_APP" >/dev/null 2>&1 || true
+  mark_ok "VoiceStudio (clonagem de voz e dublagem): instalado em $VS_APP"
+  mark_aviso "VoiceStudio: $VS_PRIMEIRO_USO"
+  mark_aviso "VoiceStudio: $VS_GATEKEEPER"
 }
 
 # O instalador oficial poe o binario em ~/.local/bin, que nem sempre esta no PATH.
@@ -605,13 +782,16 @@ prepare_simulator(){
   ensure_node || true
   ensure_postgres || true
   ensure_ffmpeg || true
+  ensure_drawtext || true
+  ensure_pillow || true
   ensure_agy || true
   ensure_ytdlp || true
   ensure_whisper || true
   ensure_whisper_model || true
   ensure_handy || true
+  ensure_voicestudio || true
 
-  printf '\n\033[1mSimulador ACE: requisitos do Mac\033[0m\n'
+  printf '\n\033[1mSimulador ACE e ACE Audiovisual: requisitos do Mac\033[0m\n'
   printf '%s' "$READY$PENDING$AVISOS"
   if [ "$PENDING_N" = 0 ]; then
     printf '\nTudo pronto. O simulador ACE ja pode rodar pelo app.\n'

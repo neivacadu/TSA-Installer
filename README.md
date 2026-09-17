@@ -13,24 +13,33 @@ curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | bash
 Você não precisa de conta no GitHub nem do `gh`. O instalador faz duas coisas.
 
 1. **Instala o app.** Ele baixa o TSA do release público, confere o SHA-256, copia o app para Aplicativos e remove a quarentena. O DNA da TSA já vem dentro do app.
-2. **Prepara o Mac para o simulador ACE e para a leitura de mídia.** O simulador vai dentro do app e precisa de:
+2. **Prepara o Mac para o simulador ACE, para a leitura de mídia e para o ACE Audiovisual.** O simulador vai dentro do app e precisa de:
    - Python 3.10 ou mais (recomendado: 3.14);
    - Node;
    - PostgreSQL ligado, em que o seu usuário rode `psql -l` e `createdb` sem senha;
    - `ffmpeg`, para a leitura de mídia;
+   - `ffmpeg` com o filtro `drawtext`, para escrever texto na tela;
+   - `pillow`, que gera o texto como imagem quando falta o `drawtext`;
    - `agy`, o Antigravity CLI do Google, que lê vídeo;
    - `yt-dlp`, para baixar vídeo de rede social;
    - `whisper-cli` (fórmula `whisper-cpp`), que transcreve o áudio;
    - o modelo `ggml-large-v3-turbo.bin` em `~/.cache/whisper`, de 1,6 GB;
-   - o Handy, app de ditado por microfone com histórico local.
+   - o Handy, app de ditado por microfone com histórico local;
+   - o VoiceStudio, app de clonagem de voz e dublagem local.
 
-   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node`, `postgresql@16`, `ffmpeg`, `yt-dlp`, `whisper-cpp` e o cask `handy`. Ele liga o PostgreSQL 16 com `brew services`. O `agy` vem do instalador oficial do Google (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), e só depois de o endereço responder 200. O que já existe fica como está. O instalador não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
+   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node`, `postgresql@16`, `ffmpeg`, `ffmpeg-full`, `pillow`, `yt-dlp`, `whisper-cpp` e o cask `handy`. Ele liga o PostgreSQL 16 com `brew services`. O `agy` vem do instalador oficial do Google (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), e só depois de o endereço responder 200. O que já existe fica como está. O instalador não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
 
    **O `yt-dlp` é o único que o instalador atualiza.** Quando o YouTube muda, a versão velha passa a dar `HTTP Error 403`. Se `brew outdated yt-dlp` acusa atraso, o instalador roda `brew upgrade yt-dlp`. Nenhum outro programa é atualizado.
 
    **O modelo de 1,6 GB nunca baixa de surpresa.** Antes de baixar, o instalador mostra o tamanho e o tempo estimado. O arquivo vai para `.parcial` e só vira o nome final quando o tamanho bate, então um download cortado no meio retoma de onde parou. No modo de conferência (`TSA_ONLY_PREREQS=1`), ele não baixa: avisa e dá o comando para baixar depois, com `TSA_BAIXAR_MODELO=1`.
 
    **As permissões do Handy são suas.** O script nunca concede permissão. O resumo final pede: abra o Handy uma vez, conceda Microfone e Acessibilidade em Ajustes do Sistema e escolha o atalho de teclado. O Handy é ferramenta de ditado, não faz parte da esteira de vídeo: se faltar, isso é aviso, não pendência que segura o simulador.
+
+   **O `drawtext` não vem na fórmula `ffmpeg`.** Desde a 9.x, a fórmula `ffmpeg` do Homebrew é compilada sem `freetype`, e sem `freetype` o `ffmpeg` não tem o filtro `drawtext` — o filtro que escreve texto na tela. Quem traz o `drawtext` é a fórmula `ffmpeg-full`. Ela é *keg-only*: não entra no `bin` do Homebrew sozinha, então o instalador põe o `bin` dela na frente do PATH, com uma linha no `~/.zprofile`, do mesmo jeito que faz com o `postgresql@16`. Se o `ffmpeg-full` já estiver instalado e só fora do PATH, o instalador não reinstala: só acrescenta o caminho. Faltar `drawtext` é aviso, não pendência, porque o `pillow` cobre o caso gerando o texto como imagem.
+
+   **O `pillow` não suja o Python do sistema.** A fórmula `pillow` do Homebrew instala o `PIL` no `site-packages` do Python do Homebrew. O instalador confere o `import PIL` no Python que ele achou e, se preciso, no Python do Homebrew, e diz no resumo qual dos dois tem o `pillow`.
+
+   **O VoiceStudio só entra depois do SHA-256, conferido duas vezes.** Ele é um app separado, com licença AGPL: roda fora do TSA e nunca entra dentro dele. O instalador baixa o `VoiceStudio_0.5.3_aarch64.dmg` da release `v0.5.3` de `github.com/debpalash/VoiceStudio` — **só desse endereço**, porque existem repositórios falsos com o mesmo nome distribuindo binário com malware. Antes de baixar o DMG, ele lê o `SHA256SUMS-macOS.Apple.Silicon.txt` da mesma release e compara com o SHA-256 que a TSA conferiu; se der diferença, recusa e nem baixa. Depois de baixar, calcula o SHA-256 do arquivo e compara de novo; se der diferença, apaga o DMG e não instala. O app é assinado ad-hoc, sem Team ID da Apple: se o macOS recusar abrir, clique nele com o botão direito, Abrir, Abrir. **Na primeira execução o VoiceStudio baixa um ambiente Python de cerca de 1,8 GB**, o que leva de 5 a 10 minutos; isso acontece dentro do app, não no instalador. Como o Handy, o VoiceStudio é ferramenta da pessoa: se faltar, isso é aviso, não pendência.
 
    **O login do Antigravity é seu.** O instalador nunca faz login, porque isso abre o navegador. Se o `agy` estiver instalado e sem login, o resumo final pede: rode o comando `agy`, escolha Google OAuth e entre com o e-mail da empresa (`@trafegosa.com.br` ou `@caduneiva.com`). Deixe a janela do terminal grande, senão o campo do código fica escondido.
 
