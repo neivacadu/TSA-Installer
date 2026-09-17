@@ -3,8 +3,9 @@
 #   curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | bash
 # 1. Baixa o app do release publico, confere o SHA-256, instala e remove a quarentena.
 #    O DNA da TSA ja vai embutido e assinado dentro do app.
-# 2. Prepara o Mac para o simulador ACE: Python 3.10+, Node e PostgreSQL ligado.
-#    So instala o que falta, via Homebrew. Falha aqui nao desfaz o app.
+# 2. Prepara o Mac para o simulador ACE e para a leitura de midia: Python 3.10+, Node,
+#    PostgreSQL ligado, ffmpeg e o Antigravity CLI (agy). So instala o que falta.
+#    Falha aqui nao desfaz o app. O login do agy e do colaborador, nunca do script.
 # Controles:
 #   TSA_SKIP_PREREQS=1  instala so o app, sem preparar o simulador.
 #   TSA_ONLY_PREREQS=1  so prepara o simulador, sem baixar nem instalar o app.
@@ -27,6 +28,11 @@ PG_WAIT="${TSA_PG_WAIT:-30}"
 PG_PORT="${TSA_PG_PORT:-5432}"
 POSTGRES_APP="${TSA_POSTGRES_APP:-/Applications/Postgres.app}"
 SYS_PYTHON="${TSA_SYS_PYTHON:-/usr/bin/python3}"
+AGY_URL="${TSA_AGY_URL:-https://antigravity.google/cli/install.sh}"
+AGY_BIN_DIR="$HOME/.local/bin"           # destino do instalador oficial do agy
+AGY_CREDS="$HOME/.gemini/oauth_creds.json"  # existe depois do login; nunca e lido
+AGY_LOGIN="rode o comando agy, escolha Google OAuth e entre com o e-mail da empresa (@trafegosa.com.br ou @caduneiva.com)"
+AGY_JANELA="deixe a janela do terminal grande, senao o campo do codigo fica escondido"
 
 TMP_DIR=""
 MOUNT=""
@@ -101,8 +107,10 @@ BREW_OFF_PATH=0
 BREW_PREFIX=""
 
 mark_ok(){ READY="${READY}  ✓ $1"$'\n'; }
+# $3 e uma observacao opcional, numa linha extra.
 mark_fail(){
   PENDING="${PENDING}  ✗ $1"$'\n'"      Para resolver: $2"$'\n'
+  [ -n "${3:-}" ] && PENDING="${PENDING}      Atencao: $3"$'\n'
   PENDING_N=$((PENDING_N + 1))
 }
 
@@ -231,6 +239,74 @@ ensure_node(){
   fi
 }
 
+ensure_ffmpeg(){
+  if command -v ffmpeg >/dev/null 2>&1; then
+    mark_ok "ffmpeg: ja estava pronto"
+    return 0
+  fi
+  if ! ensure_brew; then
+    mark_fail "ffmpeg: nao encontrado." "instale o Homebrew e rode: brew install ffmpeg"
+    return 1
+  fi
+  if brew_install ffmpeg && command -v ffmpeg >/dev/null 2>&1; then
+    mark_ok "ffmpeg: instalado"
+  else
+    mark_fail "ffmpeg: a instalacao falhou." "brew install ffmpeg"
+  fi
+}
+
+# O instalador oficial poe o binario em ~/.local/bin, que nem sempre esta no PATH.
+find_agy(){
+  command -v agy >/dev/null 2>&1 && return 0
+  if [ -x "$AGY_BIN_DIR/agy" ]; then
+    path_persistente "$AGY_BIN_DIR"
+    return 0
+  fi
+  return 1
+}
+
+agy_logado(){ [ -s "$AGY_CREDS" ]; }
+
+agy_resumo(){ # 1 = como foi parar aqui (ja estava pronto / instalado)
+  local v
+  v="$(agy --version </dev/null 2>/dev/null | head -1 || true)"
+  if agy_logado; then
+    mark_ok "Antigravity agy ${v:-sem versao}: $1, com login feito"
+  else
+    mark_fail "Antigravity agy ${v:-sem versao}: $1, mas sem login." "$AGY_LOGIN" "$AGY_JANELA"
+  fi
+}
+
+ensure_agy(){
+  if find_agy; then
+    agy_resumo "ja estava pronto"
+    return 0
+  fi
+  local fix="curl -fsSL $AGY_URL | bash"
+  if ! command -v curl >/dev/null 2>&1; then
+    mark_fail "Antigravity (agy): nao encontrado e sem curl para baixar." "$fix"
+    return 1
+  fi
+  # confere o endereco antes de baixar: nada de instalar as cegas
+  if ! curl -fsSI --max-time 20 "$AGY_URL" </dev/null >/dev/null 2>&1; then
+    mark_fail "Antigravity (agy): $AGY_URL nao respondeu 200." "confira a internet e rode depois: $fix"
+    return 1
+  fi
+  say "Instalando o Antigravity CLI (agy)..."
+  local f
+  f="$(mktemp "${TMPDIR:-/tmp}/agy-install.XXXXXX")"
+  if curl -fsSL --max-time 120 "$AGY_URL" -o "$f"; then
+    /bin/bash "$f" </dev/null || true
+  fi
+  rm -f "$f"
+  hash -r
+  if find_agy; then
+    agy_resumo "instalado"
+  else
+    mark_fail "Antigravity (agy): a instalacao nao terminou." "$fix"
+  fi
+}
+
 pg_list_ok(){ PGCONNECT_TIMEOUT=5 psql -w -l </dev/null >/dev/null 2>&1; }
 
 # Comando para ligar o servidor dono do psql que foi encontrado.
@@ -247,8 +323,8 @@ pg_start_hint(){
   echo "brew services start $f"
 }
 
-# Poe um bin do PostgreSQL no PATH: na sessao atual e numa linha idempotente do .zprofile.
-pg_use_path(){
+# Poe um bin no PATH: na sessao atual e numa linha idempotente do .zprofile.
+path_persistente(){
   local bin="$1"
   grep -qsF "$bin" "$HOME/.zprofile" ||
     printf '\nexport PATH="%s:$PATH"\n' "$bin" >>"$HOME/.zprofile"
@@ -269,7 +345,7 @@ pg_link_new_install(){
     hash -r
   else
     warn "brew link de $PG_FORMULA deu conflito; usando o PATH."
-    pg_use_path "$kegbin"
+    path_persistente "$kegbin"
   fi
 }
 
@@ -327,7 +403,7 @@ ensure_postgres(){
     kegbin="$BREW_PREFIX/opt/$PG_FORMULA/bin"
     if [ -x "$kegbin/psql" ]; then
       # ja instalado antes, sem link: nao reinstala nem linka, so usa o PATH
-      pg_use_path "$kegbin"
+      path_persistente "$kegbin"
     fi
   fi
 
@@ -386,6 +462,8 @@ prepare_simulator(){
   ensure_python || true
   ensure_node || true
   ensure_postgres || true
+  ensure_ffmpeg || true
+  ensure_agy || true
 
   printf '\n\033[1mSimulador ACE: requisitos do Mac\033[0m\n'
   printf '%s' "$READY$PENDING"

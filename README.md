@@ -13,12 +13,16 @@ curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | bash
 Você não precisa de conta no GitHub nem do `gh`. O instalador faz duas coisas.
 
 1. **Instala o app.** Ele baixa o TSA do release público, confere o SHA-256, copia o app para Aplicativos e remove a quarentena. O DNA da TSA já vem dentro do app.
-2. **Prepara o Mac para o simulador ACE.** O simulador vai dentro do app e precisa de três coisas:
+2. **Prepara o Mac para o simulador ACE e para a leitura de mídia.** O simulador vai dentro do app e precisa de:
    - Python 3.10 ou mais (recomendado: 3.14);
    - Node;
-   - PostgreSQL ligado, em que o seu usuário rode `psql -l` e `createdb` sem senha.
+   - PostgreSQL ligado, em que o seu usuário rode `psql -l` e `createdb` sem senha;
+   - `ffmpeg`, para a leitura de mídia;
+   - `agy`, o Antigravity CLI do Google, que lê vídeo.
 
-   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node` e `postgresql@16`. Ele liga o PostgreSQL 16 com `brew services`. O que já existe fica como está. O instalador não roda `brew upgrade` e não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
+   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node`, `postgresql@16` e `ffmpeg`. Ele liga o PostgreSQL 16 com `brew services`. O `agy` vem do instalador oficial do Google (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), e só depois de o endereço responder 200. O que já existe fica como está. O instalador não roda `brew upgrade` e não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
+
+   **O login do Antigravity é seu.** O instalador nunca faz login, porque isso abre o navegador. Se o `agy` estiver instalado e sem login, o resumo final pede: rode o comando `agy`, escolha Google OAuth e entre com o e-mail da empresa (`@trafegosa.com.br` ou `@caduneiva.com`). Deixe a janela do terminal grande, senão o campo do código fica escondido.
 
 Se o Mac não tem Homebrew, o instalador baixa o instalador oficial do Homebrew. **Nesse caso o Mac pode pedir a sua senha.** É a senha que você usa para entrar no Mac. O instalador do Homebrew também pede para apertar Enter antes de começar. Ele pode instalar as ferramentas de linha de comando da Apple, o que leva alguns minutos.
 

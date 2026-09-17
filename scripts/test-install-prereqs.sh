@@ -1,6 +1,7 @@
 #!/bin/bash
 # Testa a preparacao do simulador em docs/install.sh sem instalar nada de verdade.
-# brew, python3, node, psql, pg_isready e xcode-select sao falsos e registram cada
+# brew, python3, node, psql, pg_isready, xcode-select, ffmpeg, agy e curl sao falsos e
+# registram cada
 # chamada num log. O PATH do teste so tem os falsos e utilitarios basicos; HOME e
 # um diretorio temporario. Os cenarios com risco de repeticao rodam duas vezes.
 #   bash scripts/test-install-prereqs.sh
@@ -40,6 +41,19 @@ fake python3 'case "$*" in *python_version*) echo 3.14.0;; esac; exit 0'
 fake syspython3 'exit 1'
 fake xcode-select 'exit 2'
 fake node 'echo v22.0.0'
+fake ffmpeg 'echo ffmpeg version 7.1'
+fake agy 'case "$*" in *--version*) echo 1.2.5;; esac; exit 0'
+# curl falso: -I responde conforme FAKE_AGY_URL_OK; -o grava um instalador falso do agy
+fake curl '
+case "$*" in
+  *-fsSI*) [ "${FAKE_AGY_URL_OK:-1}" = 1 ] ;;
+  *)
+    prev=""; out=""
+    for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+    [ -n "$out" ] || exit 0
+    { echo "#!/bin/bash"; echo "mkdir -p \"$HOME/.local/bin\""; echo "cp \"$FAKE_TPL/agy\" \"$HOME/.local/bin/agy\""; } >"$out"
+    ;;
+esac'
 fake psql '[ -e "$FAKE_STATE/pg_running" ] || exit 2; case "$*" in *server_version_num*) echo "${FAKE_PG_VERSION:-160004}";; esac; exit 0'
 fake pg_isready '[ -e "$FAKE_STATE/pg_running" ]'
 fake createdb '[ -e "$FAKE_STATE/pg_running" ]'
@@ -52,6 +66,7 @@ case "$1" in
     case "$2" in
       python@3.14) cp "$FAKE_TPL/python3" "$P/bin/python3"; cp "$FAKE_TPL/python3" "$P/bin/python3.14" ;;
       node) cp "$FAKE_TPL/node" "$P/bin/node" ;;
+      ffmpeg) cp "$FAKE_TPL/ffmpeg" "$P/bin/ffmpeg" ;;
       postgresql@16) mkdir -p "$P/opt/postgresql@16/bin"
         cp "$FAKE_TPL/psql" "$FAKE_TPL/pg_isready" "$FAKE_TPL/createdb" "$P/opt/postgresql@16/bin/" ;;
     esac ;;
@@ -76,6 +91,7 @@ setup(){
     case "$b" in
       pg_on) touch "$S/state/pg_running" ;;
       brew) cp "$TPL/brew" "$S/prefix/bin/brew" ;;
+      agy_login) mkdir -p "$S/home/.gemini"; echo '{"token":"falso"}' >"$S/home/.gemini/oauth_creds.json" ;;
       psql_cellar)
         mkdir -p "$S/prefix/Cellar/postgresql@16/16.4/bin"
         cp "$TPL/psql" "$TPL/pg_isready" "$S/prefix/Cellar/postgresql@16/16.4/bin/"
@@ -129,7 +145,7 @@ zcount(){ grep -c "$1" "$S/home/.zprofile" 2>/dev/null || true; }
 out_has(){ grep -q "$1" "$OUT"; }
 
 echo "1. tudo presente"
-setup all brew python3 node psql pg_isready pg_on
+setup all brew python3 node psql pg_isready pg_on ffmpeg agy agy_login
 run
 check "sai 0" '[ $RC = 0 ]'
 check "nenhuma chamada ao brew" '[ -z "$(brew_calls)" ]'
@@ -137,14 +153,14 @@ check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
 check ".zprofile intocado" '[ ! -e "$S/home/.zprofile" ]'
 
 echo "2. sem Python"
-setup nopy brew node psql pg_isready pg_on
+setup nopy brew node psql pg_isready pg_on ffmpeg agy agy_login
 run
 check "sai 0" '[ $RC = 0 ]'
 check "so instala o Python" '[ "$(brew_changes)" = "brew install python@3.14;" ]'
 check "resumo mostra Python instalado" 'out_has "Python 3.14.0: instalado"'
 
 echo "3. sem Postgres"
-setup nopg brew python3 node
+setup nopg brew python3 node ffmpeg agy agy_login
 run
 check "sai 0" '[ $RC = 0 ]'
 check "instala, linka e liga o postgresql@16" \
@@ -154,7 +170,7 @@ check "confere a versao do servidor" 'grep -q "server_version_num" "$S/log"'
 check "resumo mostra PostgreSQL ligado" 'out_has "PostgreSQL 16: instalado e ligado"'
 
 echo "4. psql presente e servidor parado"
-setup pgoff brew python3 node psql_cellar
+setup pgoff brew python3 node psql_cellar ffmpeg agy agy_login
 run
 check "sai 1" '[ $RC = 1 ]'
 check "nao chama o brew" '[ -z "$(brew_calls)" ]'
@@ -162,7 +178,7 @@ check "informa servidor parado" 'out_has "servidor nao responde"'
 check "da o comando de ligar" 'out_has "Para resolver: brew services start postgresql@16"'
 
 echo "5. sem brew e sem tty"
-setup nobrew node psql pg_isready pg_on
+setup nobrew node psql pg_isready pg_on ffmpeg agy agy_login
 run
 check "termina sem travar" '! out_has TRAVOU'
 check "sai 1" '[ $RC = 1 ]'
@@ -177,7 +193,7 @@ check "nenhuma chamada registrada" '[ ! -s "$S/log" ]'
 check "avisa que pulou" 'out_has "pulada"'
 
 echo "7. brew fora do PATH, duas execucoes"
-setup offpath brew node psql pg_isready pg_on
+setup offpath brew node psql pg_isready pg_on ffmpeg agy agy_login
 BREW_ON_PATH=0
 run2
 check "1a: sai 0 e instala so o Python" '[ $RC1 = 0 ] && [ "$(brew_changes "$S/log1")" = "brew install python@3.14;" ]'
@@ -186,7 +202,7 @@ check "2a: acha o Python do brew" 'out_has "Python 3.14.0: ja estava pronto"'
 check ".zprofile com uma linha do shellenv" '[ "$(zcount "brew shellenv")" = 1 ]'
 
 echo "8. postgresql@16 ja instalado sem link, duas execucoes"
-setup keg brew python3 node keg16 pg_on
+setup keg brew python3 node keg16 pg_on ffmpeg agy agy_login
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "nao instala nem linka" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ]'
@@ -194,7 +210,7 @@ check "resumo diz ligado" 'out_has "PostgreSQL: ja estava ligado"'
 check ".zprofile com uma linha do keg" '[ "$(zcount "opt/postgresql@16/bin")" = 1 ]'
 
 echo "9. conflito no brew link, duas execucoes"
-setup linkfail brew python3 node
+setup linkfail brew python3 node ffmpeg agy agy_login
 run2 FAKE_LINKFAIL=1
 check "1a: instala, tenta o link e liga" \
   '[ "$(brew_changes "$S/log1")" = "brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;" ]'
@@ -203,7 +219,7 @@ check "2a: nao instala nem linka" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
 check ".zprofile com uma linha do keg" '[ "$(zcount "opt/postgresql@16/bin")" = 1 ]'
 
 echo "10. /usr/bin/python3 sem Command Line Tools, duas execucoes"
-setup noclt brew node psql pg_isready pg_on xcode-select
+setup noclt brew node psql pg_isready pg_on xcode-select ffmpeg agy agy_login
 cp "$TPL/syspython3" "$S/userbin/python3"
 run2 TSA_SYS_PYTHON="$S/userbin/python3"
 check "1a: nao executa o python do sistema" '! grep -q "^syspython3" "$S/log1"'
@@ -212,7 +228,7 @@ check "1a: instala o Python" '[ "$(brew_changes "$S/log1")" = "brew install pyth
 check "2a: nao reinstala" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
 
 echo "11. porta 5432 ocupada sem psql, duas execucoes"
-setup port brew python3 node
+setup port brew python3 node ffmpeg agy agy_login
 PORT_BUSY="$(free_port)"
 /usr/bin/nc -lk "$PORT_BUSY" >/dev/null 2>&1 </dev/null &
 NC_PID=$!
@@ -225,7 +241,7 @@ check "informa a porta em uso" "out_has \"porta $PORT_BUSY ja esta em uso\""
 check "nunca diz instalado e ligado" '! grep -q "instalado e ligado" "$S"/out*'
 
 echo "12. Postgres.app fora do PATH, duas execucoes"
-setup pgapp brew python3 node
+setup pgapp brew python3 node ffmpeg agy agy_login
 mkdir -p "$S/Postgres.app/Contents/Versions/latest/bin"
 cp "$TPL/psql" "$S/Postgres.app/Contents/Versions/latest/bin/"
 run2
@@ -235,7 +251,7 @@ check "informa o app e o caminho real" 'out_has "Postgres.app/Contents/Versions/
 check ".zprofile intocado" '[ ! -e "$S/home/.zprofile" ]'
 
 echo "13. outra versao do brew sem link (postgresql@14), duas execucoes"
-setup keg14 brew python3 node keg14
+setup keg14 brew python3 node keg14 ffmpeg agy agy_login
 run2
 check "sai 1 nas duas" '[ $RC1 = 1 ] && [ $RC2 = 1 ]'
 check "nao instala nada" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ]'
@@ -243,19 +259,62 @@ check "informa o caminho do keg" 'out_has "opt/postgresql@14/bin"'
 check "da o comando de ligar" 'out_has "brew services start postgresql@14"'
 
 echo "14. servidor que responde nao e o 16"
-setup otherver brew python3 node
+setup otherver brew python3 node ffmpeg agy agy_login
 run FAKE_PG_VERSION=150008
 check "sai 1" '[ $RC = 1 ]'
 check "nao diz instalado e ligado" '! out_has "instalado e ligado"'
 check "informa outro servidor" 'out_has "quem respondeu foi outro servidor (versao 150008)"'
 
 echo "15. faltando tudo, segunda execucao nao reinstala"
-setup again brew
+setup again brew curl agy_login
 run2
-check "1a: instala Python, Node e PostgreSQL" \
-  '[ "$(brew_changes "$S/log1")" = "brew install python@3.14;brew install node;brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;" ]'
-check "2a: sai 0 sem chamar o brew" '[ $RC2 = 0 ] && [ -z "$(brew_calls)" ]'
-check ".zprofile intocado (brew ja estava no PATH)" '[ ! -e "$S/home/.zprofile" ]'
+check "1a: instala Python, Node, PostgreSQL e ffmpeg" \
+  '[ "$(brew_changes "$S/log1")" = "brew install python@3.14;brew install node;brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;brew install ffmpeg;" ]'
+check "1a: instala o agy pelo instalador oficial" '[ -x "$S/home/.local/bin/agy" ]'
+check "2a: sai 0 sem chamar o brew nem o curl" '[ $RC2 = 0 ] && [ -z "$(brew_calls)" ] && ! grep -q "^curl" "$S/log"'
+
+echo "16. ffmpeg e agy presentes, com login, duas execucoes"
+setup midiaok brew python3 node psql pg_isready pg_on ffmpeg agy agy_login
+run2
+check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
+check "nao chama brew nem curl" '[ -z "$(brew_calls "$S/log1")$(brew_calls)" ] && ! grep -q "^curl" "$S/log1" "$S/log"'
+check "resumo: ffmpeg pronto" 'out_has "ffmpeg: ja estava pronto"'
+check "resumo: agy com login" 'out_has "Antigravity agy 1.2.5: ja estava pronto, com login feito"'
+check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
+
+echo "17. agy presente e sem login, duas execucoes"
+setup semlogin brew python3 node psql pg_isready pg_on ffmpeg agy
+run2
+check "sai 1 nas duas" '[ $RC1 = 1 ] && [ $RC2 = 1 ]'
+check "nao instala nada" '[ -z "$(brew_calls "$S/log1")$(brew_calls)" ] && ! grep -q "^curl" "$S/log"'
+check "resumo: sem login" 'out_has "Antigravity agy 1.2.5: ja estava pronto, mas sem login."'
+check "resumo: instrucao de login" 'out_has "escolha Google OAuth"'
+check "resumo: aviso da janela" 'out_has "campo do codigo fica escondido"'
+
+echo "18. sem ffmpeg, duas execucoes"
+setup noff brew python3 node psql pg_isready pg_on agy agy_login
+run2
+check "1a: instala so o ffmpeg" '[ "$(brew_changes "$S/log1")" = "brew install ffmpeg;" ]'
+check "1a: resumo diz instalado" 'grep -q "ffmpeg: instalado" "$S/out1"'
+check "2a: nao reinstala" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
+
+echo "19. sem agy, duas execucoes"
+setup noagy brew python3 node psql pg_isready pg_on ffmpeg curl agy_login
+run2
+check "1a: confere o endereco antes de baixar" 'grep -q "^curl -fsSI" "$S/log1"'
+check "1a: baixa e roda o instalador oficial" 'grep -q "^curl -fsSL" "$S/log1" && [ -x "$S/home/.local/bin/agy" ]'
+check "1a: resumo diz instalado com login" 'grep -q "Antigravity agy 1.2.5: instalado, com login feito" "$S/out1"'
+check "1a: nao usa o brew para o agy" '[ -z "$(brew_changes "$S/log1")" ]'
+check "2a: acha em ~/.local/bin sem baixar" '[ $RC2 = 0 ] && ! grep -q "^curl" "$S/log"'
+check ".zprofile com uma linha do ~/.local/bin" '[ "$(zcount ".local/bin")" = 1 ]'
+
+echo "20. sem agy e endereco fora do ar, duas execucoes"
+setup agyoff brew python3 node psql pg_isready pg_on ffmpeg curl
+run2 FAKE_AGY_URL_OK=0
+check "sai 1 nas duas" '[ $RC1 = 1 ] && [ $RC2 = 1 ]'
+check "confere o endereco e nao baixa" 'grep -q "^curl -fsSI" "$S/log1" && ! grep -q "^curl -fsSL" "$S/log1"'
+check "nao instala nada" '[ -z "$(brew_changes "$S/log1")" ] && [ ! -e "$S/home/.local/bin/agy" ]'
+check "resumo informa o endereco" 'out_has "nao respondeu 200"'
 
 echo
 echo "resultado: $PASS ok, $FAIL falhas"
