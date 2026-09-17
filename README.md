@@ -18,9 +18,19 @@ Você não precisa de conta no GitHub nem do `gh`. O instalador faz duas coisas.
    - Node;
    - PostgreSQL ligado, em que o seu usuário rode `psql -l` e `createdb` sem senha;
    - `ffmpeg`, para a leitura de mídia;
-   - `agy`, o Antigravity CLI do Google, que lê vídeo.
+   - `agy`, o Antigravity CLI do Google, que lê vídeo;
+   - `yt-dlp`, para baixar vídeo de rede social;
+   - `whisper-cli` (fórmula `whisper-cpp`), que transcreve o áudio;
+   - o modelo `ggml-large-v3-turbo.bin` em `~/.cache/whisper`, de 1,6 GB;
+   - o Handy, app de ditado por microfone com histórico local.
 
-   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node`, `postgresql@16` e `ffmpeg`. Ele liga o PostgreSQL 16 com `brew services`. O `agy` vem do instalador oficial do Google (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), e só depois de o endereço responder 200. O que já existe fica como está. O instalador não roda `brew upgrade` e não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
+   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node`, `postgresql@16`, `ffmpeg`, `yt-dlp`, `whisper-cpp` e o cask `handy`. Ele liga o PostgreSQL 16 com `brew services`. O `agy` vem do instalador oficial do Google (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), e só depois de o endereço responder 200. O que já existe fica como está. O instalador não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
+
+   **O `yt-dlp` é o único que o instalador atualiza.** Quando o YouTube muda, a versão velha passa a dar `HTTP Error 403`. Se `brew outdated yt-dlp` acusa atraso, o instalador roda `brew upgrade yt-dlp`. Nenhum outro programa é atualizado.
+
+   **O modelo de 1,6 GB nunca baixa de surpresa.** Antes de baixar, o instalador mostra o tamanho e o tempo estimado. O arquivo vai para `.parcial` e só vira o nome final quando o tamanho bate, então um download cortado no meio retoma de onde parou. No modo de conferência (`TSA_ONLY_PREREQS=1`), ele não baixa: avisa e dá o comando para baixar depois, com `TSA_BAIXAR_MODELO=1`.
+
+   **As permissões do Handy são suas.** O script nunca concede permissão. O resumo final pede: abra o Handy uma vez, conceda Microfone e Acessibilidade em Ajustes do Sistema e escolha o atalho de teclado. O Handy é ferramenta de ditado, não faz parte da esteira de vídeo: se faltar, isso é aviso, não pendência que segura o simulador.
 
    **O login do Antigravity é seu.** O instalador nunca faz login, porque isso abre o navegador. Se o `agy` estiver instalado e sem login, o resumo final pede: rode o comando `agy`, escolha Google OAuth e entre com o e-mail da empresa (`@trafegosa.com.br` ou `@caduneiva.com`). Deixe a janela do terminal grande, senão o campo do código fica escondido.
 
@@ -36,7 +46,7 @@ O `postgresql@16` instalado agora ganha `brew link --force`, para que `psql` e `
 
 No fim aparece um resumo com o que ficou pronto e o que falta, com o comando para resolver cada item. Uma falha nessa preparação não desfaz o app.
 
-Rodar o instalador de novo é seguro: o que já está pronto não é reinstalado nem atualizado.
+Rodar o instalador de novo é seguro: o que já está pronto não é reinstalado nem baixado de novo. A única atualização é a do `yt-dlp`, e só quando ele está atrasado.
 
 ### Controles
 

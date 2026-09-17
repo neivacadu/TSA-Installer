@@ -4,11 +4,13 @@
 # 1. Baixa o app do release publico, confere o SHA-256, instala e remove a quarentena.
 #    O DNA da TSA ja vai embutido e assinado dentro do app.
 # 2. Prepara o Mac para o simulador ACE e para a leitura de midia: Python 3.10+, Node,
-#    PostgreSQL ligado, ffmpeg e o Antigravity CLI (agy). So instala o que falta.
+#    PostgreSQL ligado, ffmpeg, Antigravity CLI (agy), yt-dlp, whisper-cpp, o modelo de
+#    transcricao e o Handy. So instala o que falta, e so atualiza o yt-dlp velho.
 #    Falha aqui nao desfaz o app. O login do agy e do colaborador, nunca do script.
 # Controles:
 #   TSA_SKIP_PREREQS=1  instala so o app, sem preparar o simulador.
 #   TSA_ONLY_PREREQS=1  so prepara o simulador, sem baixar nem instalar o app.
+#   TSA_BAIXAR_MODELO=1 autoriza baixar o modelo de 1,6 GB no modo de conferencia.
 # Tudo fica em funcoes e so roda na chamada de main na ultima linha. Com curl | bash,
 # um download cortado no meio nao executa pela metade: sem a ultima linha, nada roda.
 set -euo pipefail
@@ -33,6 +35,14 @@ AGY_BIN_DIR="$HOME/.local/bin"           # destino do instalador oficial do agy
 AGY_CREDS="$HOME/.gemini/oauth_creds.json"  # existe depois do login; nunca e lido
 AGY_LOGIN="rode o comando agy, escolha Google OAuth e entre com o e-mail da empresa (@trafegosa.com.br ou @caduneiva.com)"
 AGY_JANELA="deixe a janela do terminal grande, senao o campo do codigo fica escondido"
+WHISPER_FORMULA="whisper-cpp"             # a formula e whisper-cpp; o comando e whisper-cli
+WHISPER_DIR="${TSA_WHISPER_DIR:-$HOME/.cache/whisper}"
+WHISPER_MODEL="ggml-large-v3-turbo.bin"
+WHISPER_MODEL_URL="${TSA_WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$WHISPER_MODEL}"
+WHISPER_MODEL_BYTES="${TSA_WHISPER_MODEL_BYTES:-1624555275}"   # 1,6 GB
+MODELO_CMD="curl -fsSL $INSTALL_URL | TSA_ONLY_PREREQS=1 TSA_BAIXAR_MODELO=1 bash"
+HANDY_APP="${TSA_HANDY_APP:-/Applications/Handy.app}"
+HANDY_PERMISSOES="abra o Handy uma vez, conceda Microfone e Acessibilidade em Ajustes do Sistema e escolha o atalho de teclado"
 
 TMP_DIR=""
 MOUNT=""
@@ -100,6 +110,7 @@ install_app(){
 
 READY=""
 PENDING=""
+AVISOS=""
 PENDING_N=0
 BREW=""
 BREW_FAILED=0
@@ -112,6 +123,12 @@ mark_fail(){
   PENDING="${PENDING}  ✗ $1"$'\n'"      Para resolver: $2"$'\n'
   [ -n "${3:-}" ] && PENDING="${PENDING}      Atencao: $3"$'\n'
   PENDING_N=$((PENDING_N + 1))
+}
+# Aviso entra no resumo e nao conta como pendencia: nao prende o simulador nem o app.
+mark_aviso(){
+  AVISOS="${AVISOS}  ! $1"$'\n'
+  [ -n "${2:-}" ] && AVISOS="${AVISOS}      Para resolver: $2"$'\n'
+  return 0
 }
 
 # Com curl | bash a entrada padrao e o script. Pergunta e sudo so leem do terminal.
@@ -179,10 +196,11 @@ ensure_brew(){
 
 # atalho: sem brew upgrade e sem atualizar dependentes; se uma dependencia desatualizada
 # for exigida pela formula, o proprio brew install ainda pode atualiza-la.
+# O nome vem por ultimo, entao "brew_install --cask handy" tambem funciona.
 brew_install(){
-  say "Instalando $1..."
+  say "Instalando ${*: -1}..."
   HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 HOMEBREW_NO_ENV_HINTS=1 \
-    "$BREW" install "$1" </dev/null
+    "$BREW" install "$@" </dev/null
   local rc=$?
   hash -r
   persist_brew_env
@@ -304,6 +322,130 @@ ensure_agy(){
     agy_resumo "instalado"
   else
     mark_fail "Antigravity (agy): a instalacao nao terminou." "$fix"
+  fi
+}
+
+ytdlp_versao(){ yt-dlp --version </dev/null 2>/dev/null | head -1; }
+
+# So o yt-dlp envelhece sozinho: quando o YouTube muda, a versao velha da HTTP 403.
+# Por isso ele e o unico que o script atualiza. "brew outdated" sai 0 mesmo quando esta
+# em dia, entao o que vale e a saida ter texto.
+ytdlp_atualiza(){
+  local v
+  v="$(ytdlp_versao)"
+  if [ -z "$BREW" ] || [ -z "$("$BREW" outdated yt-dlp </dev/null 2>/dev/null)" ]; then
+    mark_ok "yt-dlp ${v:-sem versao}: ja estava pronto"
+    return 0
+  fi
+  say "Atualizando o yt-dlp (a versao velha da erro 403 no YouTube)..."
+  if HOMEBREW_NO_ENV_HINTS=1 "$BREW" upgrade yt-dlp </dev/null; then
+    hash -r
+    mark_ok "yt-dlp $(ytdlp_versao): atualizado (a versao anterior era $v)"
+  else
+    mark_aviso "yt-dlp $v: esta velho e a atualizacao falhou; o YouTube pode dar erro 403." \
+      "brew upgrade yt-dlp"
+  fi
+}
+
+ensure_ytdlp(){
+  if command -v yt-dlp >/dev/null 2>&1; then
+    find_brew || true
+    ytdlp_atualiza
+    return 0
+  fi
+  if ! ensure_brew; then
+    mark_fail "yt-dlp: nao encontrado." "instale o Homebrew e rode: brew install yt-dlp"
+    return 1
+  fi
+  if brew_install yt-dlp && command -v yt-dlp >/dev/null 2>&1; then
+    mark_ok "yt-dlp $(ytdlp_versao): instalado"
+  else
+    mark_fail "yt-dlp: a instalacao falhou." "brew install yt-dlp"
+  fi
+}
+
+# A formula e whisper-cpp, mas quem transcreve e o comando whisper-cli. Confere o comando.
+ensure_whisper(){
+  if command -v whisper-cli >/dev/null 2>&1; then
+    mark_ok "whisper-cli: ja estava pronto"
+    return 0
+  fi
+  local fix="brew install $WHISPER_FORMULA"
+  if ! ensure_brew; then
+    mark_fail "whisper-cli: nao encontrado." "instale o Homebrew e rode: $fix"
+    return 1
+  fi
+  if brew_install "$WHISPER_FORMULA" && command -v whisper-cli >/dev/null 2>&1; then
+    mark_ok "whisper-cli: instalado"
+  else
+    mark_fail "whisper-cli: a instalacao falhou." "$fix"
+  fi
+}
+
+modelo_bytes(){ /usr/bin/stat -f %z "$1" 2>/dev/null || echo 0; }
+
+# Baixa para .parcial e so renomeia quando o tamanho bate. Retoma download interrompido.
+baixar_modelo(){
+  local destino="$1" parcial="$1.parcial" tam
+  mkdir -p "$WHISPER_DIR" || return 1
+  say "Modelo de transcricao $WHISPER_MODEL: 1,6 GB ($WHISPER_MODEL_BYTES bytes) para baixar."
+  say "Leva uns 3 min a 10 MB/s e uns 14 min a 2 MB/s. Pode interromper: o download retoma."
+  curl -fL --progress-bar --continue-at - "$WHISPER_MODEL_URL" -o "$parcial" </dev/null || return 1
+  tam="$(modelo_bytes "$parcial")"
+  if [ "$tam" != "$WHISPER_MODEL_BYTES" ]; then
+    warn "Download incompleto: $tam de $WHISPER_MODEL_BYTES bytes. O pedaco ficou em $parcial."
+    return 1
+  fi
+  mv "$parcial" "$destino"
+}
+
+ensure_whisper_model(){
+  local destino="$WHISPER_DIR/$WHISPER_MODEL" tam
+  if [ -f "$destino" ]; then
+    tam="$(modelo_bytes "$destino")"
+    if [ "$tam" = "$WHISPER_MODEL_BYTES" ]; then
+      mark_ok "Modelo $WHISPER_MODEL: ja estava pronto ($WHISPER_DIR)"
+      return 0
+    fi
+    warn "O modelo em $destino tem $tam bytes e o certo sao $WHISPER_MODEL_BYTES. Vou baixar de novo."
+    rm -f "$destino"
+  fi
+  # O unico item pesado. Na conferencia, avisa e da o comando; nunca segura a maquina.
+  if [ "${TSA_ONLY_PREREQS:-0}" = 1 ] && [ "${TSA_BAIXAR_MODELO:-0}" != 1 ]; then
+    mark_fail "Modelo $WHISPER_MODEL: falta em $WHISPER_DIR e sao 1,6 GB." \
+      "com tempo e internet boa, rode: $MODELO_CMD"
+    return 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    mark_fail "Modelo $WHISPER_MODEL: falta em $WHISPER_DIR e nao ha curl para baixar." "$MODELO_CMD"
+    return 1
+  fi
+  if baixar_modelo "$destino"; then
+    mark_ok "Modelo $WHISPER_MODEL: baixado ($WHISPER_DIR)"
+  else
+    mark_fail "Modelo $WHISPER_MODEL: o download nao terminou." \
+      "rode de novo, que ele retoma de onde parou: $MODELO_CMD"
+  fi
+}
+
+# Ditado por microfone, ferramenta da pessoa. Nao faz parte da esteira de video, entao
+# falta de Handy e aviso, nunca pendencia. Permissao so a pessoa concede.
+ensure_handy(){
+  if [ -d "$HANDY_APP" ]; then
+    mark_ok "Handy (ditado por microfone): ja estava pronto"
+    mark_aviso "Handy: $HANDY_PERMISSOES"
+    return 0
+  fi
+  local fix="brew install --cask handy"
+  if ! ensure_brew; then
+    mark_aviso "Handy (ditado por microfone): nao instalado." "instale o Homebrew e rode: $fix"
+    return 1
+  fi
+  if brew_install --cask handy && [ -d "$HANDY_APP" ]; then
+    mark_ok "Handy (ditado por microfone): instalado"
+    mark_aviso "Handy: $HANDY_PERMISSOES"
+  else
+    mark_aviso "Handy (ditado por microfone): a instalacao falhou." "$fix"
   fi
 }
 
@@ -464,9 +606,13 @@ prepare_simulator(){
   ensure_postgres || true
   ensure_ffmpeg || true
   ensure_agy || true
+  ensure_ytdlp || true
+  ensure_whisper || true
+  ensure_whisper_model || true
+  ensure_handy || true
 
   printf '\n\033[1mSimulador ACE: requisitos do Mac\033[0m\n'
-  printf '%s' "$READY$PENDING"
+  printf '%s' "$READY$PENDING$AVISOS"
   if [ "$PENDING_N" = 0 ]; then
     printf '\nTudo pronto. O simulador ACE ja pode rodar pelo app.\n'
     return 0
