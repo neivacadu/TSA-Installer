@@ -148,7 +148,10 @@ else
   rm -f "$DIST"/*.dmg "$DIST"/*.zip "$DIST"/*.blockmap "$DIST"/latest-mac.yml
   (
     cd "$APP"
-    pnpm install --frozen-lockfile
+    # O build:mac empacota arm64 e x64: o beforePack exige as dependencias nativas das duas CPUs,
+    # e o build:mobile-web (dentro do build:desktop) precisa das dependencias do mobile/.
+    pnpm run install:release
+    (cd mobile && pnpm install --frozen-lockfile)
     TSA_ADHOC_SIGN=1 pnpm run build:mac
     TSA_RELEASE_VERSION="$VERSAO" TSA_SOURCE_COMMIT="$APP_COMMIT" pnpm run prepare:tsa-macos-release
   )
