@@ -72,7 +72,12 @@ ok "gh logado com escrita em $REPO"
 
 git -C "$APP" rev-parse --git-dir >/dev/null 2>&1 || die "$APP nao e um repositorio git"
 APP_BRANCH_ATUAL="$(git -C "$APP" branch --show-current)"
-[ "$APP_BRANCH_ATUAL" = "$APP_BRANCH" ] || die "o app esta na branch '$APP_BRANCH_ATUAL'; precisa estar em $APP_BRANCH"
+# O worktree do Master usa nome proprio e acompanha a branch certa no remoto.
+# Vale a branch de destino, nao o nome local.
+APP_UPSTREAM="$(git -C "$APP" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo '')"
+if [ "$APP_BRANCH_ATUAL" != "$APP_BRANCH" ] && [ "${APP_UPSTREAM#*/}" != "$APP_BRANCH" ]; then
+  die "o app esta na branch '$APP_BRANCH_ATUAL' (acompanha '${APP_UPSTREAM:-nenhuma}'); precisa ser $APP_BRANCH"
+fi
 [ -z "$(git -C "$APP" status --porcelain)" ] || die "a arvore do app tem mudancas. Rode: git -C $APP status"
 APP_COMMIT="$(git -C "$APP" rev-parse HEAD)"
 ok "app em $APP_BRANCH, arvore limpa, commit $APP_COMMIT"
@@ -84,7 +89,10 @@ ok "a tag $TAG ainda nao existe"
 # Gates que so bloqueiam a publicacao. No ensaio, so avisam.
 BLOQUEIOS=""
 bloqueio(){ BLOQUEIOS="${BLOQUEIOS}  - $1"$'\n'; }
-[ "$(git -C "$ROOT" branch --show-current)" = main ] || bloqueio "o instalador precisa estar na branch main (esta em $(git -C "$ROOT" branch --show-current))"
+ROOT_BRANCH="$(git -C "$ROOT" branch --show-current)"
+# O worktree do Master usa nome proprio e acompanha main no remoto; vale o destino.
+ROOT_UPSTREAM="$(git -C "$ROOT" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo '')"
+[ "$ROOT_BRANCH" = main ] || [ "${ROOT_UPSTREAM#*/}" = main ] || bloqueio "o instalador precisa ir para main (esta em '$ROOT_BRANCH', acompanha '${ROOT_UPSTREAM:-nenhuma}')"
 [ -z "$(git -C "$ROOT" status --porcelain)" ] || bloqueio "a arvore do instalador tem mudancas (git -C $ROOT status)"
 git -C "$ROOT" fetch -q origin main 2>/dev/null || bloqueio "nao consegui buscar origin/main"
 git -C "$ROOT" merge-base --is-ancestor origin/main HEAD 2>/dev/null || bloqueio "o HEAD do instalador nao contem origin/main; atualize antes (git pull)"
