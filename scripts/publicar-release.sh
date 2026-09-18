@@ -36,6 +36,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# O remoto do instalador nem sempre se chama "origin": no worktree do Master cada
+# repositorio entra como um remoto proprio. Descobrimos pelo endereco, nao pelo nome.
+remoto_do_repo(){
+  git -C "$1" remote -v 2>/dev/null | awk -v r="$2" '$3=="(fetch)" && index($2, r){print $1; exit}'
+}
+
 say(){ printf '\n\033[1;36m== %s\033[0m\n' "$1"; }
 ok(){ printf '  \033[0;32m✓\033[0m %s\n' "$1"; }
 note(){ printf '  \033[0;33m!\033[0m %s\n' "$1"; }
@@ -82,7 +88,9 @@ fi
 APP_COMMIT="$(git -C "$APP" rev-parse HEAD)"
 ok "app em $APP_BRANCH, arvore limpa, commit $APP_COMMIT"
 
-[ -z "$(git -C "$ROOT" ls-remote --tags origin "refs/tags/$TAG")" ] || die "a tag $TAG ja existe no remoto"
+REMOTO="$(remoto_do_repo "$ROOT" "$REPO")"
+[ -n "$REMOTO" ] || die "nenhum remoto do instalador aponta para $REPO"
+[ -z "$(git -C "$ROOT" ls-remote --tags "$REMOTO" "refs/tags/$TAG")" ] || die "a tag $TAG ja existe no remoto"
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then die "a release $TAG ja existe"; fi
 ok "a tag $TAG ainda nao existe"
 
@@ -94,8 +102,8 @@ ROOT_BRANCH="$(git -C "$ROOT" branch --show-current)"
 ROOT_UPSTREAM="$(git -C "$ROOT" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo '')"
 [ "$ROOT_BRANCH" = main ] || [ "${ROOT_UPSTREAM#*/}" = main ] || bloqueio "o instalador precisa ir para main (esta em '$ROOT_BRANCH', acompanha '${ROOT_UPSTREAM:-nenhuma}')"
 [ -z "$(git -C "$ROOT" status --porcelain)" ] || bloqueio "a arvore do instalador tem mudancas (git -C $ROOT status)"
-git -C "$ROOT" fetch -q origin main 2>/dev/null || bloqueio "nao consegui buscar origin/main"
-git -C "$ROOT" merge-base --is-ancestor origin/main HEAD 2>/dev/null || bloqueio "o HEAD do instalador nao contem origin/main; atualize antes (git pull)"
+git -C "$ROOT" fetch -q "$REMOTO" main 2>/dev/null || bloqueio "nao consegui buscar $REMOTO/main"
+git -C "$ROOT" merge-base --is-ancestor "$REMOTO/main" HEAD 2>/dev/null || bloqueio "o HEAD do instalador nao contem $REMOTO/main; atualize antes (git pull)"
 if [ "$PRIVADO" = true ]; then
   bloqueio "o repositorio $REPO esta PRIVADO. Para abrir: gh repo edit $REPO --visibility public --accept-visibility-change-consequences"
 elif ! gh api "repos/$REPO/pages" >/dev/null 2>&1; then
@@ -270,7 +278,7 @@ if [ "$PUBLICAR" != 1 ]; then
   faria "copiar $OUT/install.sh para docs/install.sh e commitar: release: aponta o instalador pra $TAG"
   faria "gh release create $TAG -R $REPO --prerelease --target <sha da origin/main> --title \"TSA macOS $VERSAO\" com:"
   for f in $ASSETS; do printf '           %s (%s bytes)\n' "$(basename "$f")" "$(stat -f %z "$f")"; done
-  faria "git push origin main"
+  faria "git push $REMOTO HEAD:main"
   faria "esperar $PAGES_URL mostrar $TAG (ate ${PAGES_TIMEOUT} s) e conferir os checksums publicados"
   printf '\nNotas da release:\n%s\n' "$NOTAS" | sed 's/^/    /'
   printf '\nEnsaio concluido. Nada foi publicado. Artefatos em:\n  %s\n' "$OUT"
@@ -283,12 +291,12 @@ git -C "$ROOT" commit -q -m "release: aponta o instalador pra $TAG"
 ok "commit $(git -C "$ROOT" rev-parse --short HEAD)"
 
 # A release sai antes do push: o install.sh publicado nunca aponta para tag inexistente.
-REMOTE_MAIN="$(git -C "$ROOT" ls-remote origin refs/heads/main | cut -f1)"
+REMOTE_MAIN="$(git -C "$ROOT" ls-remote "$REMOTO" refs/heads/main | cut -f1)"
 # shellcheck disable=SC2086
 gh release create "$TAG" -R "$REPO" --prerelease --target "$REMOTE_MAIN" \
   --title "TSA macOS $VERSAO" --notes "$NOTAS" $ASSETS
 ok "release $TAG criada"
-git -C "$ROOT" push origin main
+git -C "$ROOT" push "$REMOTO" HEAD:main
 ok "main enviada"
 
 # ------------------------------------------------------------------ g. verificacao
