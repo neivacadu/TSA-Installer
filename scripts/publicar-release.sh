@@ -88,6 +88,23 @@ fi
 APP_COMMIT="$(git -C "$APP" rev-parse HEAD)"
 ok "app em $APP_BRANCH, arvore limpa, commit $APP_COMMIT"
 
+# TSA novo nasce com o DNA mais novo, sem depender da Central: a build so sai se o DNA
+# embutido for o ultimo commit do main do DNA e bater com o config/release-policy.json.
+POLICY="$ROOT/config/release-policy.json"
+DNA_GH="$(node -p "require('$POLICY').dnaRepository")"
+DNA_MAIN="$(gh api "repos/$DNA_GH/commits/main" --jq .sha)" || die "nao consegui ler o main de $DNA_GH"
+read -r EMB_VERSAO EMB_COMMIT < <(node -e '
+  const m = require(process.argv[1]).manifest
+  console.log(m.version, m.id.replace(/^dna-ace-tsa-/, ""))' "$APP/resources/tsa/dna-embedded-release.json")
+[ "$EMB_COMMIT" = "$DNA_MAIN" ] || die "o DNA embutido ($EMB_VERSAO, commit ${EMB_COMMIT:0:9}) nao e o ultimo aprovado: o main de $DNA_GH esta em ${DNA_MAIN:0:9}.
+  Gere, assine e publique o DNA novo na Central e copie o mesmo envelope para
+  resources/tsa/dna-embedded-release.json (memoria dna-release-central)."
+POLICY_DNA_VERSAO="$(node -p "require('$POLICY').dnaReleaseVersion")"
+POLICY_DNA_COMMIT="$(node -p "require('$POLICY').dnaApprovedCommit")"
+[ "$POLICY_DNA_VERSAO $POLICY_DNA_COMMIT" = "$EMB_VERSAO $EMB_COMMIT" ] ||
+  die "config/release-policy.json ($POLICY_DNA_VERSAO ${POLICY_DNA_COMMIT:0:9}) difere do DNA embutido ($EMB_VERSAO ${EMB_COMMIT:0:9}). Atualize dnaReleaseVersion e dnaApprovedCommit."
+ok "DNA embutido $EMB_VERSAO e o ultimo do main de $DNA_GH"
+
 REMOTO="$(remoto_do_repo "$ROOT" "$REPO")"
 [ -n "$REMOTO" ] || die "nenhum remoto do instalador aponta para $REPO"
 [ -z "$(git -C "$ROOT" ls-remote --tags "$REMOTO" "refs/tags/$TAG")" ] || die "a tag $TAG ja existe no remoto"
@@ -172,9 +189,6 @@ for arch in $ARCHS; do
     ok "$destino <- $src (sha512 confere com o build)"
   done
 done
-
-POLICY_DNA_VERSAO="$(node -p "require('$ROOT/config/release-policy.json').dnaReleaseVersion")"
-POLICY_DNA_COMMIT="$(node -p "require('$ROOT/config/release-policy.json').dnaApprovedCommit")"
 
 confere_app(){ # caminho do .app, arch
   local app="$1" arch="$2" plist exe archs res r dna
