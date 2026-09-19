@@ -79,6 +79,7 @@ EDITOR_VIDEO_PERGUNTA="Você edita vídeo (Premiere Pro ou CapCut)? [s/N] "
 EDITOR_VIDEO_MUDAR="curl -fsSL $INSTALL_URL | TSA_ONLY_PREREQS=1 TSA_EDITOR_VIDEO=sim bash"
 EDITOR_VIDEO=""
 APP_INSTALADO=""   # preenchido pelo install_app
+AGY_PENDENTE=""    # login do agy faltando
 
 TMP_DIR=""
 MOUNT=""
@@ -484,6 +485,7 @@ agy_resumo(){ # 1 = como foi parar aqui (ja estava pronto / instalado)
   if agy_logado; then
     mark_ok "Antigravity agy ${v:-sem versao}: $1, com login feito"
   else
+    AGY_PENDENTE=1
     mark_fail "Antigravity agy ${v:-sem versao}: $1, mas sem login." "$AGY_LOGIN" "$AGY_JANELA"
   fi
 }
@@ -979,7 +981,9 @@ prepare_simulator(){
     printf '\nTudo pronto. O simulador ACE ja pode rodar pelo app.\n'
     return 0
   fi
-  printf '\nFalta resolver %s item(ns). O simulador ACE so roda depois disso.\n' "$PENDING_N"
+  printf '\nFalta resolver %s item(ns), marcados com x acima. So o que depende deles espera; o resto ja funciona.\n' "$PENDING_N"
+  # O login do agy nao trava o simulador: ele serve a leitura de video pelo Gemini e ao ACE Operacional.
+  [ -n "$AGY_PENDENTE" ] && printf 'Sem o login do Antigravity, so a leitura de video pelo Gemini e o ACE Operacional esperam.\n'
   [ "${TSA_ONLY_PREREQS:-0}" = 1 ] || printf 'O app TSA ja esta instalado e abre normalmente.\n'
   printf 'Depois de resolver, confira de novo com:\n  %s\n' "$REPAIR_CMD"
   return 1
