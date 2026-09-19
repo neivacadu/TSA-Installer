@@ -35,7 +35,8 @@ POSTGRES_APP="${TSA_POSTGRES_APP:-/Applications/Postgres.app}"
 SYS_PYTHON="${TSA_SYS_PYTHON:-/usr/bin/python3}"
 AGY_URL="${TSA_AGY_URL:-https://antigravity.google/cli/install.sh}"
 AGY_BIN_DIR="$HOME/.local/bin"           # destino do instalador oficial do agy
-AGY_CREDS="$HOME/.gemini/oauth_creds.json"  # existe depois do login; nunca e lido
+AGY_CREDS="$HOME/.gemini/oauth_creds.json"  # login do Gemini CLI antigo; nunca e lido
+AGY_TOKEN="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"  # login do agy 1.2+; nunca e lido
 AGY_LOGIN="rode o comando agy, escolha Google OAuth e entre com o e-mail da empresa (@trafegosa.com.br ou @caduneiva.com)"
 AGY_JANELA="deixe a janela do terminal grande, senao o campo do codigo fica escondido"
 WHISPER_FORMULA="whisper-cpp"             # a formula e whisper-cpp; o comando e whisper-cli
@@ -477,7 +478,8 @@ find_agy(){
   return 1
 }
 
-agy_logado(){ [ -s "$AGY_CREDS" ]; }
+# O agy 1.2 grava o login em antigravity-oauth-token; versoes antigas, em oauth_creds.json.
+agy_logado(){ [ -s "$AGY_TOKEN" ] || [ -s "$AGY_CREDS" ]; }
 
 agy_resumo(){ # 1 = como foi parar aqui (ja estava pronto / instalado)
   local v

@@ -185,6 +185,7 @@ setup(){
       pg_on) touch "$S/state/pg_running" ;;
       brew) cp "$TPL/brew" "$S/prefix/bin/brew" ;;
       agy_login) mkdir -p "$S/home/.gemini"; echo '{"token":"falso"}' >"$S/home/.gemini/oauth_creds.json" ;;
+      agy_login_novo) mkdir -p "$S/home/.gemini/antigravity-cli"; echo 'falso' >"$S/home/.gemini/antigravity-cli/antigravity-oauth-token" ;;
       handy) mkdir -p "$S/Applications/Handy.app" ;;
       voicestudio) mkdir -p "$S/Applications/VoiceStudio.app" ;;
       pillow) touch "$S/state/pillow" ;;
@@ -765,5 +766,19 @@ check "nao chama brew install python@3.12" '! grep -q "^brew install python@3.12
 check "roda o tsa_editor nos dois" '[ "$(editor_calls)" = "$DOIS" ]'
 
 echo
+echo "52. agy 1.2 logado pelo antigravity-oauth-token: sem pendencia"
+setup agynovo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login_novo yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
+run
+check "sai 0" '[ $RC = 0 ]'
+check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
+check "nao pede o login do agy" '! out_has "mas sem login"'
+
+echo "53. agy sem nenhum login: pendencia, mas o resto funciona"
+setup agysem brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
+run
+check "pede o login do agy" 'out_has "mas sem login"'
+check "diz que so a leitura de video e o Operacional esperam" 'out_has "so a leitura de video pelo Gemini e o ACE Operacional esperam"'
+check "nao diz mais que o simulador nao roda" '! out_has "simulador ACE so roda"'
+
 echo "resultado: $PASS ok, $FAIL falhas"
 [ "$FAIL" = 0 ]
