@@ -58,6 +58,8 @@ case "$*" in
 esac
 exit 0'
 fake syspython3 'exit 1'
+# Python que o WhisperX e o pycaps aceitam (3.10 a 3.12)
+fake python3.12 'echo Python 3.12.11'
 fake xcode-select 'exit 2'
 fake node 'echo v22.0.0'
 # a formula ffmpeg do brew vem sem freetype: sem drawtext na lista de filtros
@@ -143,6 +145,8 @@ case "$1" in
     [ -n "${FAKE_BREWFAIL:-}" ] && [ "$2" = "$FAKE_BREWFAIL" ] && exit 1
     case "$2" in
       python@3.14) cp "$FAKE_TPL/python3" "$P/bin/python3"; cp "$FAKE_TPL/python3" "$P/bin/python3.14" ;;
+      python@3.12) mkdir -p "$P/opt/python@3.12/bin"
+        cp "$FAKE_TPL/python3.12" "$P/opt/python@3.12/bin/python3.12"; cp "$FAKE_TPL/python3.12" "$P/bin/python3.12" ;;
       node) cp "$FAKE_TPL/node" "$P/bin/node" ;;
       ffmpeg) cp "$FAKE_TPL/ffmpeg" "$P/bin/ffmpeg" ;;
       ffmpeg-full) mkdir -p "$P/opt/ffmpeg-full/bin"
@@ -184,6 +188,8 @@ setup(){
       handy) mkdir -p "$S/Applications/Handy.app" ;;
       voicestudio) mkdir -p "$S/Applications/VoiceStudio.app" ;;
       pillow) touch "$S/state/pillow" ;;
+      py312_keg) mkdir -p "$S/prefix/opt/python@3.12/bin"
+        cp "$TPL/python3.12" "$S/prefix/opt/python@3.12/bin/python3.12" ;;
       ffmpeg_drawtext) cp "$TPL/ffmpeg-full" "$S/userbin/ffmpeg" ;;
       ffmpeg_full_keg) mkdir -p "$S/prefix/opt/ffmpeg-full/bin"
         cp "$TPL/ffmpeg-full" "$S/prefix/opt/ffmpeg-full/bin/ffmpeg" ;;
@@ -223,6 +229,7 @@ run(){
     TSA_HANDY_APP="$S/Applications/Handy.app" TSA_WHISPER_MODEL_BYTES=4096 \
     FAKE_VS_VOLUME="$S/volume" TSA_VS_APP="$S/Applications/VoiceStudio.app" \
     TSA_VS_BASE_URL="https://exemplo.invalido/voicestudio" TSA_VS_SHA256="$VS_SHA" \
+    TSA_EDITOR_PY_ROOTS="$S/prefix/opt" \
     "$@" /bin/bash "$SCRIPT" >"$OUT" 2>&1 </dev/null &
   local pid=$! n=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -655,7 +662,8 @@ check "a unica pendencia e o Homebrew" \
   'out_has "Falta resolver 1 item" && out_has "✗ Homebrew" && ! grep -qE "✗ (auto-editor|capcut-cli)" "$OUT"'
 
 # Editor de video: WhisperX e pycaps pelo tsa_editor.py do app, so para quem responde sim.
-TUDO="brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli"
+BASE="brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli"
+TUDO="$BASE python3.12"   # 44 a 48 presumem um Python que o tsa_editor aceita
 PERGUNTA="Você edita vídeo (Premiere Pro ou CapCut)? [s/N]"
 # app falso com o tsa_editor.py; $1 e a resposta que o terminal falso vai dar
 editor_setup(){
@@ -728,6 +736,33 @@ check "falta requisito: aviso, sai 0" '[ $RC = 0 ] && out_has "pycaps: nao insta
 rm -f "$S/TSA.app/Contents/Resources/tsa/corte/tsa_editor.py"
 run "$ED" TSA_TTY="$S/tty"
 check "sem tsa_editor.py: aviso, sai 0" '[ $RC = 0 ] && out_has "nao achei o tsa_editor.py" && ! out_has "Falta resolver"'
+
+echo "49. sem Python 3.10 a 3.12: instala o python@3.12 antes do tsa_editor"
+setup edpy $BASE
+editor_setup s
+run "$ED" TSA_EDITOR_VIDEO=sim
+check "sai 0" '[ $RC = 0 ]'
+check "instala so o python@3.12 pelo brew" '[ "$(brew_changes)" = "brew install python@3.12;" ]'
+check "depois roda o tsa_editor nos dois" '[ "$(editor_calls)" = "$DOIS" ]'
+check "o brew vem antes do tsa_editor" \
+  '[ "$(grep -nE "^brew install python@3.12|tsa_editor.py --instalar" "$S/log" | head -1 | grep -c "brew install")" = 1 ]'
+
+echo "50. brew falha no python@3.12: aviso, sem tsa_editor"
+setup edpyfalha $BASE
+editor_setup s
+run "$ED" TSA_EDITOR_VIDEO=sim FAKE_BREWFAIL=python@3.12
+check "sai 0 e nao vira pendencia" '[ $RC = 0 ] && ! out_has "Falta resolver"'
+check "tentou o python@3.12" 'grep -q "^brew install python@3.12" "$S/log"'
+check "nao chama o tsa_editor" '[ -z "$(editor_calls)" ]'
+check "avisa com o comando" 'out_has "nao consegui instalar o Python 3.12" && out_has "Para resolver: brew install python@3.12"'
+
+echo "51. Python 3.12 ja no keg do brew: nao reinstala"
+setup edpyok $BASE py312_keg
+editor_setup s
+run "$ED" TSA_EDITOR_VIDEO=sim
+check "sai 0" '[ $RC = 0 ]'
+check "nao chama brew install python@3.12" '! grep -q "^brew install python@3.12" "$S/log"'
+check "roda o tsa_editor nos dois" '[ "$(editor_calls)" = "$DOIS" ]'
 
 echo
 echo "resultado: $PASS ok, $FAIL falhas"

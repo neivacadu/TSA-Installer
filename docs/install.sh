@@ -73,6 +73,8 @@ VS_MANUAL="baixe $VS_DMG so em https://github.com/$VS_REPO/releases e confira o 
 EDITOR_VIDEO_FILE="$HOME/.config/tsa/editor-video"
 EDITOR_VIDEO_PY="${TSA_EDITOR_PY:-}"   # gancho do teste; vazio = procura dentro do app
 EDITOR_VIDEO_REL="Contents/Resources/tsa/corte/tsa_editor.py"
+# Onde o brew guarda o python@3.X (keg). Gancho do teste; em uso normal fica no padrao.
+EDITOR_VIDEO_PY_ROOTS="${TSA_EDITOR_PY_ROOTS-/opt/homebrew/opt /usr/local/opt}"
 EDITOR_VIDEO_PERGUNTA="Você edita vídeo (Premiere Pro ou CapCut)? [s/N] "
 EDITOR_VIDEO_MUDAR="curl -fsSL $INSTALL_URL | TSA_ONLY_PREREQS=1 TSA_EDITOR_VIDEO=sim bash"
 EDITOR_VIDEO=""
@@ -643,6 +645,19 @@ editor_video_py(){
   return 1
 }
 
+# Algum Python de 3.10 a 3.12 que o tsa_editor aceita (mesmos lugares onde ele procura).
+editor_video_tem_python(){
+  local m c r
+  for m in 12 11 10; do
+    c="$(command -v "python3.$m" 2>/dev/null || true)"
+    [ -n "$c" ] && [ -x "$c" ] && return 0
+    for r in $EDITOR_VIDEO_PY_ROOTS; do
+      [ -x "$r/python@3.$m/bin/python3.$m" ] && return 0
+    done
+  done
+  return 1
+}
+
 # Roda depois do app instalado. Ja instalado na versao certa, o tsa_editor so confere.
 # Codigo 1 = falta requisito; 2 = falhou. Os dois sao aviso, nunca pendencia.
 ensure_editor_video(){
@@ -659,6 +674,16 @@ ensure_editor_video(){
   if ! command -v python3 >/dev/null 2>&1; then
     mark_aviso "WhisperX e pycaps: sem python3 para rodar o tsa_editor." "tsa-editor --instalar whisperx && tsa-editor --instalar pycaps"
     return 0
+  fi
+  # O WhisperX aceita Python 3.10 a 3.13 e o pycaps 3.10 a 3.12; o Homebrew de hoje traz o 3.14.
+  # Sem um 3.10-3.12 na maquina, instala o python@3.12, que o tsa_editor acha em /opt/homebrew/opt.
+  if ! editor_video_tem_python; then
+    say "Instalando o Python 3.12, que o WhisperX e o pycaps pedem (o Python 3.14 do Mac nao serve para eles)."
+    if ! ensure_brew || ! brew_install python@3.12 || ! editor_video_tem_python; then
+      mark_aviso "WhisperX e pycaps: nao consegui instalar o Python 3.12." \
+        "brew install python@3.12 && tsa-editor --instalar whisperx && tsa-editor --instalar pycaps"
+      return 0
+    fi
   fi
   say "Instalando o WhisperX e o pycaps para edicao de video. Pode levar uns 25 minutos e ocupar uns 3 GB."
   for id in whisperx pycaps; do
