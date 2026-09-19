@@ -16,7 +16,7 @@
 # um download cortado no meio nao executa pela metade: sem a ultima linha, nada roda.
 set -euo pipefail
 
-RELEASE_TAG="${TSA_RELEASE_TAG:-tsa-installer-v0.4.3-adhoc}"
+RELEASE_TAG="${TSA_RELEASE_TAG:-tsa-installer-v0.4.4-adhoc}"
 BASE_URL="https://github.com/neivacadu/TSA-Installer/releases/download/${RELEASE_TAG}"
 APP_NAME="${TSA_APP_NAME:-TSA.app}"
 INSTALL_URL="https://neivacadu.github.io/TSA-Installer/install.sh"
