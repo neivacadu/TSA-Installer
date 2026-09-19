@@ -339,5 +339,17 @@ for arch in $ARCHS; do
 done
 ok "checksums publicados batem com os DMGs e os downloads respondem"
 
+# ------------------------------------------------------------------ h. copia local
+# Decisão do Cadu (19/09/2026): na máquina ficam só a versão atual e a anterior, para poder voltar.
+say "h. Copia local em ~/Downloads"
+LOCAL_DIR="$HOME/Downloads/TSA-$VERSAO"
+mkdir -p "$LOCAL_DIR"
+for arch in $ARCHS; do cp -f "$OUT/tsa-macos-$arch.dmg" "$LOCAL_DIR/"; done
+ok "instaladores em $LOCAL_DIR"
+ls -d "$HOME/Downloads"/TSA-[0-9]*.[0-9]*.[0-9]* 2>/dev/null | sed 's#.*/TSA-##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' |
+  sort -t. -k1,1n -k2,2n -k3,3n | sed '$d' | sed '$d' | while read -r antiga; do
+    rm -rf "$HOME/Downloads/TSA-$antiga" && ok "apagada a copia local antiga TSA-$antiga"
+  done
+
 printf '\nPublicado. Os colaboradores ja podem instalar com:\n  curl -fsSL %s | bash\n' "$PAGES_URL"
 printf 'Depois que o time instalar, feche o repositorio:\n  gh repo edit %s --visibility private --accept-visibility-change-consequences\n' "$REPO"
