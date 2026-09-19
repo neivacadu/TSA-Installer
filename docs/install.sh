@@ -12,7 +12,7 @@
 #   TSA_SKIP_PREREQS=1  instala so o app, sem preparar o simulador.
 #   TSA_ONLY_PREREQS=1  so prepara o simulador, sem baixar nem instalar o app.
 #   TSA_BAIXAR_MODELO=1 autoriza baixar o modelo de 1,6 GB no modo de conferencia.
-#   TSA_EDITOR_VIDEO=sim|nao responde a pergunta do editor de video (WhisperX e pycaps)
+#   TSA_EDITOR_VIDEO=sim|nao responde a pergunta do editor de video (WhisperX, pycaps e VoiceStudio)
 #                       e passa a ser a resposta guardada em ~/.config/tsa/editor-video.
 # Tudo fica em funcoes e so roda na chamada de main na ultima linha. Com curl | bash,
 # um download cortado no meio nao executa pela metade: sem a ultima linha, nada roda.
@@ -393,6 +393,13 @@ ensure_pillow(){
 # nunca pendencia. Nada e instalado sem o sha256 bater duas vezes: primeiro o sha256 que
 # a release publica, depois o sha256 do arquivo que chegou. Qualquer diferenca recusa.
 ensure_voicestudio(){
+  # Decisao do Cadu (19/09/2026): so quem edita video recebe o VoiceStudio. Os anuncios narram
+  # com voz de banco da ElevenLabs; o VoiceStudio serve ao tsa-voz do ACE Audiovisual.
+  if [ "$EDITOR_VIDEO" != sim ]; then
+    if [ -d "$VS_APP" ]; then mark_ok "VoiceStudio: ja instalado (so e usado na edicao de video)"
+    else mark_ok "VoiceStudio: fora, pela resposta de que nao edita video"; fi
+    return 0
+  fi
   if [ -d "$VS_APP" ]; then
     mark_ok "VoiceStudio (clonagem de voz e dublagem): ja estava pronto"
     mark_aviso "VoiceStudio: $VS_PRIMEIRO_USO"
@@ -634,7 +641,7 @@ decidir_editor_video(){
   case "$r" in sim|nao) EDITOR_VIDEO="$r"; return 0 ;; esac
   EDITOR_VIDEO="nao"
   has_tty || return 0
-  printf '\nQuem edita video recebe o WhisperX e o pycaps: cerca de 3 GB e 25 minutos a mais.\n'
+  printf '\nQuem edita video recebe o WhisperX, o pycaps e o VoiceStudio: cerca de 5 GB e 30 minutos a mais.\n'
   printf '%s' "$EDITOR_VIDEO_PERGUNTA"
   read -r r <"$TTY_DEV" || r=""
   case "$r" in [sS]|[sS][iI][mM]|[yY]|[yY][eE][sS]) EDITOR_VIDEO="sim" ;; esac

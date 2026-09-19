@@ -384,7 +384,7 @@ check "informa outro servidor" 'out_has "quem respondeu foi outro servidor (vers
 
 echo "15. faltando tudo, segunda execucao nao reinstala"
 setup again brew curl hdiutil ditto xattr agy_login modelo
-run2
+run2 TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe
 check "1a: instala Python, Node, PostgreSQL, ffmpeg, ffmpeg-full, pillow, auto-editor, yt-dlp, whisper-cpp e Handy" \
   '[ "$(brew_changes "$S/log1")" = "brew install python@3.14;brew install node;brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;brew install ffmpeg;brew install ffmpeg-full;brew install pillow;brew install auto-editor;brew install yt-dlp;brew install whisper-cpp;brew install --cask handy;" ]'
 check "1a: instala o agy pelo instalador oficial" '[ -x "$S/home/.local/bin/agy" ]'
@@ -571,7 +571,7 @@ check "2a: resumo diz ja estava pronto" 'out_has "pillow (texto como imagem): ja
 
 echo "35. VoiceStudio ja instalado: nao baixa nada"
 setup vsok brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio curl hdiutil ditto xattr auto-editor capcut-cli
-run2
+run2 TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "nao chama curl nem hdiutil" '! grep -qE "^(curl|hdiutil|ditto)" "$S/log1" "$S/log"'
 check "resumo diz pronto" 'out_has "VoiceStudio (clonagem de voz e dublagem): ja estava pronto"'
@@ -580,7 +580,7 @@ check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
 
 echo "36. sem VoiceStudio: confere o sha256 duas vezes e instala, duas execucoes"
 setup vsnovo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
-run2
+run2 TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "1a: baixa o SHA256SUMS antes do DMG" \
   'grep -n "SHA256SUMS-macOS.Apple.Silicon.txt" "$S/log1" >"$S/a" &&
@@ -598,7 +598,7 @@ check "2a: acha instalado e nao baixa de novo" '! grep -qE "^(curl|hdiutil|ditto
 
 echo "37. sha256 divergente na release: recusa antes de baixar o DMG"
 setup vssha brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
-run FAKE_VS_SUMS_SHA=0000000000000000000000000000000000000000000000000000000000000000
+run TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe FAKE_VS_SUMS_SHA=0000000000000000000000000000000000000000000000000000000000000000
 check "nao baixa o DMG" '! grep -q "VoiceStudio_0.5.3_aarch64.dmg -o" "$S/log"'
 check "nao instala o app" '[ ! -e "$S/Applications/VoiceStudio.app" ]'
 check "diz qual sha256 a release publicou" \
@@ -608,7 +608,7 @@ check "nao vira pendencia" '! out_has "Falta resolver"'
 
 echo "38. DMG adulterado: recusa depois de baixar"
 setup vsdmg brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
-run FAKE_VS_DMG_BYTES=1024
+run TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe FAKE_VS_DMG_BYTES=1024
 check "baixa o DMG e nao monta" \
   'grep -q "VoiceStudio_0.5.3_aarch64.dmg -o" "$S/log" && ! grep -q "^hdiutil" "$S/log"'
 check "nao instala o app" '[ ! -e "$S/Applications/VoiceStudio.app" ]'
@@ -618,7 +618,7 @@ check "nao vira pendencia" '! out_has "Falta resolver"'
 
 echo "39. release sem o SHA256SUMS: nao baixa nada"
 setup vssemsums brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
-run FAKE_VS_SUMS_OK=0
+run TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe FAKE_VS_SUMS_OK=0
 check "nao baixa o DMG nem instala" \
   '! grep -q "VoiceStudio_0.5.3_aarch64.dmg -o" "$S/log" && [ ! -e "$S/Applications/VoiceStudio.app" ]'
 check "informa o arquivo que faltou" 'out_has "SHA256SUMS-macOS.Apple.Silicon.txt da release v0.5.3 nao baixou"'
@@ -787,6 +787,14 @@ run
 check "sai 0" '[ $RC = 0 ]'
 check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
 check "nao pede o login do agy" '! out_has "mas sem login"'
+
+echo "55. quem nao edita video: nao baixa o VoiceStudio"
+setup vsnao brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
+run TSA_EDITOR_VIDEO=nao
+check "sai 0" '[ $RC = 0 ]'
+check "nao instala o VoiceStudio" '[ ! -d "$S/Applications/VoiceStudio.app" ]'
+check "resumo diz que ficou fora" 'out_has "VoiceStudio: fora, pela resposta de que nao edita video"'
+check "sem aviso do primeiro uso" '! out_has "baixa um ambiente Python de cerca de 1,8 GB"'
 
 echo "resultado: $PASS ok, $FAIL falhas"
 [ "$FAIL" = 0 ]
