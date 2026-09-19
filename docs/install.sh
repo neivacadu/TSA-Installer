@@ -524,6 +524,24 @@ ytdlp_atualiza(){
   fi
 }
 
+# Higgsfield CLI oficial (MIT): geracao de imagem e video da Fabrica e do ACE Audiovisual.
+# Vem do npm. O login fica com cada pessoa: higgsfield auth login.
+ensure_higgsfield(){
+  if command -v higgsfield >/dev/null 2>&1; then
+    mark_ok "Higgsfield CLI $(higgsfield --version 2>/dev/null | awk '{print $2}'): ja estava pronto"
+    return 0
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    mark_aviso "Higgsfield CLI: npm nao encontrado; a geracao de video pelo Higgsfield fica indisponivel." "brew install node && npm install -g @higgsfield/cli"
+    return 0
+  fi
+  if npm install -g @higgsfield/cli >/dev/null 2>&1 && command -v higgsfield >/dev/null 2>&1; then
+    mark_ok "Higgsfield CLI $(higgsfield --version 2>/dev/null | awk '{print $2}'): instalado (entre com: higgsfield auth login)"
+  else
+    mark_aviso "Higgsfield CLI: a instalacao falhou; a geracao de video pelo Higgsfield fica indisponivel." "npm install -g @higgsfield/cli"
+  fi
+}
+
 ensure_ytdlp(){
   if command -v yt-dlp >/dev/null 2>&1; then
     find_brew || true
@@ -785,6 +803,7 @@ prepare_simulator(){
   ensure_drawtext || true
   ensure_pillow || true
   ensure_agy || true
+  ensure_higgsfield || true
   ensure_ytdlp || true
   ensure_whisper || true
   ensure_whisper_model || true
