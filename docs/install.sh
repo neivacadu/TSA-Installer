@@ -37,6 +37,9 @@ AGY_URL="${TSA_AGY_URL:-https://antigravity.google/cli/install.sh}"
 AGY_BIN_DIR="$HOME/.local/bin"           # destino do instalador oficial do agy
 AGY_CREDS="$HOME/.gemini/oauth_creds.json"  # login do Gemini CLI antigo; nunca e lido
 AGY_TOKEN="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"  # login do agy 1.2+; nunca e lido
+# O agy 1.2.7 guarda o login no Chaves do macOS (servico gemini, conta antigravity; o log dele diz
+# "authenticated via keyring"). So se confere se o item existe: sem -w, nao le o token nem pede senha.
+AGY_SECURITY="${TSA_AGY_SECURITY-/usr/bin/security}"
 AGY_LOGIN="rode o comando agy, escolha Google OAuth e entre com o e-mail da empresa (@trafegosa.com.br ou @caduneiva.com)"
 AGY_JANELA="deixe a janela do terminal grande, senao o campo do codigo fica escondido"
 WHISPER_FORMULA="whisper-cpp"             # a formula e whisper-cpp; o comando e whisper-cli
@@ -479,7 +482,10 @@ find_agy(){
 }
 
 # O agy 1.2 grava o login em antigravity-oauth-token; versoes antigas, em oauth_creds.json.
-agy_logado(){ [ -s "$AGY_TOKEN" ] || [ -s "$AGY_CREDS" ]; }
+agy_logado(){
+  "$AGY_SECURITY" find-generic-password -s gemini -a antigravity >/dev/null 2>&1 && return 0
+  [ -s "$AGY_TOKEN" ] || [ -s "$AGY_CREDS" ]
+}
 
 agy_resumo(){ # 1 = como foi parar aqui (ja estava pronto / instalado)
   local v

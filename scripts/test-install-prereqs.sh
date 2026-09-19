@@ -186,6 +186,7 @@ setup(){
       brew) cp "$TPL/brew" "$S/prefix/bin/brew" ;;
       agy_login) mkdir -p "$S/home/.gemini"; echo '{"token":"falso"}' >"$S/home/.gemini/oauth_creds.json" ;;
       agy_login_novo) mkdir -p "$S/home/.gemini/antigravity-cli"; echo 'falso' >"$S/home/.gemini/antigravity-cli/antigravity-oauth-token" ;;
+      agy_keychain) printf '#!/bin/bash\n[ "$*" = "find-generic-password -s gemini -a antigravity" ]\n' >"$S/userbin/security"; chmod +x "$S/userbin/security" ;;
       handy) mkdir -p "$S/Applications/Handy.app" ;;
       voicestudio) mkdir -p "$S/Applications/VoiceStudio.app" ;;
       pillow) touch "$S/state/pillow" ;;
@@ -230,7 +231,7 @@ run(){
     TSA_HANDY_APP="$S/Applications/Handy.app" TSA_WHISPER_MODEL_BYTES=4096 \
     FAKE_VS_VOLUME="$S/volume" TSA_VS_APP="$S/Applications/VoiceStudio.app" \
     TSA_VS_BASE_URL="https://exemplo.invalido/voicestudio" TSA_VS_SHA256="$VS_SHA" \
-    TSA_EDITOR_PY_ROOTS="$S/prefix/opt" \
+    TSA_EDITOR_PY_ROOTS="$S/prefix/opt" TSA_AGY_SECURITY="$S/userbin/security" \
     "$@" /bin/bash "$SCRIPT" >"$OUT" 2>&1 </dev/null &
   local pid=$! n=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -779,6 +780,13 @@ run
 check "pede o login do agy" 'out_has "mas sem login"'
 check "diz que so a leitura de video e o Operacional esperam" 'out_has "so a leitura de video pelo Gemini e o ACE Operacional esperam"'
 check "nao diz mais que o simulador nao roda" '! out_has "simulador ACE so roda"'
+
+echo "54. agy 1.2.7 logado so pelo Chaves do macOS: sem pendencia"
+setup agykc brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_keychain yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
+run
+check "sai 0" '[ $RC = 0 ]'
+check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
+check "nao pede o login do agy" '! out_has "mas sem login"'
 
 echo "resultado: $PASS ok, $FAIL falhas"
 [ "$FAIL" = 0 ]
