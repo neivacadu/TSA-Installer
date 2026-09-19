@@ -679,7 +679,9 @@ ensure_editor_video(){
   # Sem um 3.10-3.12 na maquina, instala o python@3.12, que o tsa_editor acha em /opt/homebrew/opt.
   if ! editor_video_tem_python; then
     say "Instalando o Python 3.12, que o WhisperX e o pycaps pedem (o Python 3.14 do Mac nao serve para eles)."
-    if ! ensure_brew || ! brew_install python@3.12 || ! editor_video_tem_python; then
+    # O resultado decide: o brew pode sair com erro so no passo de link e o keg ficar pronto.
+    ensure_brew && { brew_install python@3.12 || true; }
+    if ! editor_video_tem_python; then
       mark_aviso "WhisperX e pycaps: nao consegui instalar o Python 3.12." \
         "brew install python@3.12 && tsa-editor --instalar whisperx && tsa-editor --instalar pycaps"
       return 0
