@@ -12,6 +12,8 @@
 #   TSA_SKIP_PREREQS=1  instala so o app, sem preparar o simulador.
 #   TSA_ONLY_PREREQS=1  so prepara o simulador, sem baixar nem instalar o app.
 #   TSA_BAIXAR_MODELO=1 autoriza baixar o modelo de 1,6 GB no modo de conferencia.
+#   TSA_EDITOR_VIDEO=sim|nao responde a pergunta do editor de video (WhisperX e pycaps)
+#                       e passa a ser a resposta guardada em ~/.config/tsa/editor-video.
 # Tudo fica em funcoes e so roda na chamada de main na ultima linha. Com curl | bash,
 # um download cortado no meio nao executa pela metade: sem a ultima linha, nada roda.
 set -euo pipefail
@@ -64,6 +66,17 @@ VS_APP="${TSA_VS_APP:-/Applications/VoiceStudio.app}"
 VS_PRIMEIRO_USO="na primeira vez ele baixa um ambiente Python de cerca de 1,8 GB, o que leva de 5 a 10 minutos; isso acontece dentro do app, nao aqui no instalador"
 VS_GATEKEEPER="ele e assinado ad-hoc, sem Team ID da Apple; se o macOS recusar abrir, clique com o botao direito no app, Abrir, Abrir"
 VS_MANUAL="baixe $VS_DMG so em https://github.com/$VS_REPO/releases e confira o sha256 com o arquivo $VS_SUMS da mesma release"
+
+# ---- WhisperX e pycaps: so para quem edita video (decisao do Cadu, 19/09/2026)
+# Juntos passam de 3 GB e levam uns 25 minutos (o PyTorch do WhisperX). Quem instala e o
+# tsa_editor.py do app, fonte unica das versoes fixadas; aqui so se decide se roda.
+EDITOR_VIDEO_FILE="$HOME/.config/tsa/editor-video"
+EDITOR_VIDEO_PY="${TSA_EDITOR_PY:-}"   # gancho do teste; vazio = procura dentro do app
+EDITOR_VIDEO_REL="Contents/Resources/tsa/corte/tsa_editor.py"
+EDITOR_VIDEO_PERGUNTA="Você edita vídeo (Premiere Pro ou CapCut)? [s/N] "
+EDITOR_VIDEO_MUDAR="curl -fsSL $INSTALL_URL | TSA_ONLY_PREREQS=1 TSA_EDITOR_VIDEO=sim bash"
+EDITOR_VIDEO=""
+APP_INSTALADO=""   # preenchido pelo install_app
 
 TMP_DIR=""
 MOUNT=""
@@ -120,6 +133,7 @@ install_app(){
   app_target="$dest/$APP_NAME"
   rm -rf "$app_target"
   ditto "$src_app" "$app_target" || die "Falha ao copiar o app."
+  APP_INSTALADO="$app_target"
   # ad-hoc: re-assina e remove a quarentena do Gatekeeper para abrir sem "app danificado"
   codesign --force --deep --sign - "$app_target" >/dev/null 2>&1 || true
   /usr/bin/xattr -dr com.apple.quarantine "$app_target" >/dev/null 2>&1 || true
@@ -594,6 +608,71 @@ ensure_capcut(){
   return 0
 }
 
+# Decide uma vez, no comeco da preparacao, para a pessoa nao ter de esperar a pergunta.
+# Ordem: TSA_EDITOR_VIDEO, resposta guardada, pergunta no terminal. Sem terminal = nao,
+# e essa resposta padrao nao e guardada: a proxima execucao com terminal pergunta.
+decidir_editor_video(){
+  local r=""
+  case "${TSA_EDITOR_VIDEO:-}" in
+    sim|nao) EDITOR_VIDEO="$TSA_EDITOR_VIDEO"; guardar_editor_video; return 0 ;;
+    "") ;;
+    *) warn "TSA_EDITOR_VIDEO=$TSA_EDITOR_VIDEO ignorado: use sim ou nao." ;;
+  esac
+  [ -f "$EDITOR_VIDEO_FILE" ] && r="$(head -1 "$EDITOR_VIDEO_FILE" 2>/dev/null || true)"
+  case "$r" in sim|nao) EDITOR_VIDEO="$r"; return 0 ;; esac
+  EDITOR_VIDEO="nao"
+  has_tty || return 0
+  printf '\nQuem edita video recebe o WhisperX e o pycaps: cerca de 3 GB e 25 minutos a mais.\n'
+  printf '%s' "$EDITOR_VIDEO_PERGUNTA"
+  read -r r <"$TTY_DEV" || r=""
+  case "$r" in [sS]|[sS][iI][mM]|[yY]|[yY][eE][sS]) EDITOR_VIDEO="sim" ;; esac
+  guardar_editor_video
+}
+guardar_editor_video(){
+  { mkdir -p "$(dirname "$EDITOR_VIDEO_FILE")" && printf '%s\n' "$EDITOR_VIDEO" >"$EDITOR_VIDEO_FILE"; } 2>/dev/null || true
+}
+
+# Procura o tsa_editor.py no app que acabou de ser instalado ou num ja instalado antes.
+editor_video_py(){
+  local c
+  if [ -n "$EDITOR_VIDEO_PY" ]; then [ -f "$EDITOR_VIDEO_PY" ] && printf '%s' "$EDITOR_VIDEO_PY"; return; fi
+  for c in "${APP_INSTALADO:+$APP_INSTALADO/$EDITOR_VIDEO_REL}" \
+           "/Applications/$APP_NAME/$EDITOR_VIDEO_REL" "$HOME/Applications/$APP_NAME/$EDITOR_VIDEO_REL"; do
+    [ -n "$c" ] && [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+# Roda depois do app instalado. Ja instalado na versao certa, o tsa_editor so confere.
+# Codigo 1 = falta requisito; 2 = falhou. Os dois sao aviso, nunca pendencia.
+ensure_editor_video(){
+  if [ "$EDITOR_VIDEO" != sim ]; then
+    mark_ok "WhisperX e pycaps: fora, pela resposta de que nao edita video. Para mudar: $EDITOR_VIDEO_MUDAR"
+    return 0
+  fi
+  local py id rc
+  if ! py="$(editor_video_py)"; then
+    mark_aviso "WhisperX e pycaps: nao achei o tsa_editor.py dentro do $APP_NAME." \
+      "instale o app e rode: tsa-editor --instalar whisperx && tsa-editor --instalar pycaps"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    mark_aviso "WhisperX e pycaps: sem python3 para rodar o tsa_editor." "tsa-editor --instalar whisperx && tsa-editor --instalar pycaps"
+    return 0
+  fi
+  say "Instalando o WhisperX e o pycaps para edicao de video. Pode levar uns 25 minutos e ocupar uns 3 GB."
+  for id in whisperx pycaps; do
+    rc=0
+    python3 "$py" --instalar "$id" </dev/null || rc=$?
+    case "$rc" in
+      0) mark_ok "$id: pronto para edicao de video" ;;
+      1) mark_aviso "$id: nao instalado, falta um requisito (o motivo saiu logo acima)." "tsa-editor --instalar $id" ;;
+      *) mark_aviso "$id: a instalacao falhou (codigo $rc)." "tsa-editor --instalar $id" ;;
+    esac
+  done
+  return 0
+}
+
 ensure_ytdlp(){
   if command -v yt-dlp >/dev/null 2>&1; then
     find_brew || true
@@ -848,6 +927,7 @@ prepare_simulator(){
   # brew fora do PATH (segunda execucao na mesma janela): carrega o shellenv antes de
   # procurar Python e Node, para achar o que o brew ja instalou.
   find_brew || true
+  decidir_editor_video || true
   ensure_python || true
   ensure_node || true
   ensure_postgres || true
@@ -863,6 +943,7 @@ prepare_simulator(){
   ensure_whisper_model || true
   ensure_handy || true
   ensure_voicestudio || true
+  ensure_editor_video || true
 
   printf '\n\033[1mSimulador ACE e ACE Audiovisual: requisitos do Mac\033[0m\n'
   printf '%s' "$READY$PENDING$AVISOS"

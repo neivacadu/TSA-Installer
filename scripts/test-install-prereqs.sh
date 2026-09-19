@@ -1,6 +1,6 @@
 #!/bin/bash
 # Testa a preparacao do simulador em docs/install.sh sem instalar nada de verdade.
-# brew, python3, node, psql, pg_isready, xcode-select, ffmpeg, agy, yt-dlp, whisper-cli, auto-editor, capcut-cli, npm,
+# brew, python3 (e o tsa_editor.py do app por ele), node, psql, pg_isready, xcode-select, ffmpeg, agy, yt-dlp, whisper-cli, auto-editor, capcut-cli, npm,
 # curl, hdiutil, ditto e xattr sao falsos e registram cada
 # chamada num log. O modelo do whisper tem 4096 bytes no teste, nunca 1,6 GB, e o DMG do
 # VoiceStudio tem 2048 bytes: o sha256 conferido e o desses bytes, calculado de verdade.
@@ -42,9 +42,17 @@ fake(){ # nome, corpo
   printf '#!/bin/bash\necho "%s $*" >>"$FAKE_LOG"\n%s\n' "$1" "$2" >"$TPL/$1"
   chmod +x "$TPL/$1"
 }
-# o import do PIL so passa depois que o brew instala a formula pillow
+# o import do PIL so passa depois que o brew instala a formula pillow.
+# tsa_editor.py --instalar: FAKE_EDITOR_RC forca o codigo de saida; sem ele, a primeira
+# vez instala e grava o estado, e as seguintes respondem que ja esta instalada.
 fake python3 '
 case "$*" in
+  *"tsa_editor.py --instalar "*)
+    id="${@: -1}"
+    [ -n "${FAKE_EDITOR_RC:-}" ] && exit "$FAKE_EDITOR_RC"
+    if [ -e "$FAKE_STATE/editor_$id" ]; then echo "[já instalada] $id"
+    else touch "$FAKE_STATE/editor_$id"; echo "[instalada] $id"; fi
+    exit 0 ;;
   *python_version*) echo 3.14.0 ;;
   *"import PIL"*) [ -e "$FAKE_STATE/pillow" ] || exit 1 ;;
 esac
@@ -645,6 +653,81 @@ check "capcut-cli: avisa que falta o npm" 'out_has "capcut-cli: npm nao encontra
 check "auto-editor: manda instalar o Homebrew" 'out_has "instale o Homebrew e rode: brew install auto-editor"'
 check "a unica pendencia e o Homebrew" \
   'out_has "Falta resolver 1 item" && out_has "✗ Homebrew" && ! grep -qE "✗ (auto-editor|capcut-cli)" "$OUT"'
+
+# Editor de video: WhisperX e pycaps pelo tsa_editor.py do app, so para quem responde sim.
+TUDO="brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli"
+PERGUNTA="Você edita vídeo (Premiere Pro ou CapCut)? [s/N]"
+# app falso com o tsa_editor.py; $1 e a resposta que o terminal falso vai dar
+editor_setup(){
+  mkdir -p "$S/TSA.app/Contents/Resources/tsa/corte"
+  : >"$S/TSA.app/Contents/Resources/tsa/corte/tsa_editor.py"
+  printf '%s\n' "$1" >"$S/tty"
+  ED="TSA_EDITOR_PY=$S/TSA.app/Contents/Resources/tsa/corte/tsa_editor.py"
+}
+perguntou(){ grep -qF "$PERGUNTA" "${1:-$OUT}"; }
+editor_calls(){ grep -o 'tsa_editor.py --instalar [a-z]*' "${1:-$S/log}" | tr '\n' ';'; }
+guardado(){ cat "$S/home/.config/tsa/editor-video" 2>/dev/null; }
+DOIS="tsa_editor.py --instalar whisperx;tsa_editor.py --instalar pycaps;"
+
+echo "44. edita video (resposta s): instala os dois e nao pergunta de novo"
+setup edsim $TUDO
+editor_setup s
+run2 "$ED" TSA_TTY="$S/tty"
+check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
+check "1a: pergunta" 'perguntou "$S/out1"'
+check "1a: avisa tempo e tamanho antes" 'grep -q "25 minutos" "$S/out1" && grep -q "3 GB" "$S/out1"'
+check "1a: instala whisperx e depois pycaps" '[ "$(editor_calls "$S/log1")" = "$DOIS" ]'
+check "guarda sim" '[ "$(guardado)" = sim ]'
+check "2a: nao pergunta de novo" '! perguntou'
+check "2a: o tsa_editor responde ja instalada" 'out_has "\[já instalada\] whisperx" && out_has "\[já instalada\] pycaps"'
+check "resumo: os dois prontos" 'out_has "whisperx: pronto" && out_has "pycaps: pronto"'
+
+echo "45. nao edita video (resposta n): nao instala; a resposta guardada vale depois"
+setup ednao $TUDO
+editor_setup n
+run "$ED" TSA_TTY="$S/tty"
+check "sai 0" '[ $RC = 0 ]'
+check "pergunta" 'perguntou'
+check "nao chama o tsa_editor" '[ -z "$(editor_calls)" ]'
+check "guarda nao" '[ "$(guardado)" = nao ]'
+check "resumo diz como mudar" 'out_has "TSA_EDITOR_VIDEO=sim"'
+printf 's\n' >"$S/tty"
+run "$ED" TSA_TTY="$S/tty"
+check "2a: terminal responderia s, mas nao pergunta" '! perguntou'
+check "2a: continua sem instalar" '[ -z "$(editor_calls)" ]'
+
+echo "46. sem terminal: nao instala, nao trava e nao guarda"
+setup edsemtty $TUDO
+editor_setup s
+run "$ED"
+check "termina sem travar e sai 0" '! out_has TRAVOU && [ $RC = 0 ]'
+check "nao pergunta" '! perguntou'
+check "nao chama o tsa_editor" '[ -z "$(editor_calls)" ]'
+check "nao guarda resposta" '[ ! -e "$S/home/.config/tsa/editor-video" ]'
+
+echo "47. TSA_EDITOR_VIDEO sobrepoe a resposta guardada e a pergunta"
+setup edenv $TUDO
+editor_setup n
+mkdir -p "$S/home/.config/tsa"; echo nao >"$S/home/.config/tsa/editor-video"
+run "$ED" TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=sim
+check "sim: nao pergunta e instala os dois" '! perguntou && [ "$(editor_calls)" = "$DOIS" ]'
+check "sim: passa a ser a resposta guardada" '[ "$(guardado)" = sim ]'
+: >"$S/log"
+run "$ED" TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
+check "nao: nao instala" '[ -z "$(editor_calls)" ] && [ "$(guardado)" = nao ]'
+
+echo "48. tsa_editor falha, falta requisito ou nao existe: aviso que nao bloqueia"
+setup edfalha $TUDO
+editor_setup s
+run "$ED" TSA_TTY="$S/tty" FAKE_EDITOR_RC=2
+check "falhou: sai 0 e tudo pronto" '[ $RC = 0 ] && out_has "Tudo pronto" && ! out_has "Falta resolver"'
+check "falhou: tenta os dois" '[ "$(editor_calls)" = "$DOIS" ]'
+check "falhou: avisa com o comando" 'out_has "whisperx: a instalacao falhou (codigo 2)" && out_has "Para resolver: tsa-editor --instalar pycaps"'
+run "$ED" TSA_TTY="$S/tty" FAKE_EDITOR_RC=1
+check "falta requisito: aviso, sai 0" '[ $RC = 0 ] && out_has "pycaps: nao instalado, falta um requisito" && ! out_has "Falta resolver"'
+rm -f "$S/TSA.app/Contents/Resources/tsa/corte/tsa_editor.py"
+run "$ED" TSA_TTY="$S/tty"
+check "sem tsa_editor.py: aviso, sai 0" '[ $RC = 0 ] && out_has "nao achei o tsa_editor.py" && ! out_has "Falta resolver"'
 
 echo
 echo "resultado: $PASS ok, $FAIL falhas"
