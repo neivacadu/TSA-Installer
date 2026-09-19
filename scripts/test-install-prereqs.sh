@@ -1,6 +1,6 @@
 #!/bin/bash
 # Testa a preparacao do simulador em docs/install.sh sem instalar nada de verdade.
-# brew, python3, node, psql, pg_isready, xcode-select, ffmpeg, agy, yt-dlp, whisper-cli,
+# brew, python3, node, psql, pg_isready, xcode-select, ffmpeg, agy, yt-dlp, whisper-cli, auto-editor, capcut-cli, npm,
 # curl, hdiutil, ditto e xattr sao falsos e registram cada
 # chamada num log. O modelo do whisper tem 4096 bytes no teste, nunca 1,6 GB, e o DMG do
 # VoiceStudio tem 2048 bytes: o sha256 conferido e o desses bytes, calculado de verdade.
@@ -77,6 +77,17 @@ fake agy 'case "$*" in *--version*) echo 1.2.5;; esac; exit 0'
 fake yt-dlp 'echo 2026.08.19'
 fake yt-dlp-velho 'echo 2026.03.03'
 fake whisper-cli 'echo whisper 1.7'
+fake auto-editor 'echo 31.6.0'
+fake auto-editor-velho 'echo 30.1.0'
+fake capcut-cli 'echo 0.25.0'
+fake capcut-cli-velho 'echo 0.24.0'
+# npm falso: so sabe instalar o capcut-cli, e grava o binario ao lado dele no PATH
+fake npm '
+[ -n "${FAKE_NPMFAIL:-}" ] && exit 1
+case "$*" in
+  *"install -g capcut-cli@"*) cp "$FAKE_TPL/capcut-cli" "$(dirname "$0")/capcut-cli" ;;
+  *) exit 1 ;;
+esac'
 # curl falso: -I responde conforme FAKE_AGY_URL_OK; o modelo vira um arquivo do tamanho
 # de FAKE_MODEL_WRITE; o SHA256SUMS traz o sha de FAKE_VS_SUMS_SHA e o DMG do VoiceStudio
 # vira um arquivo de FAKE_VS_DMG_BYTES bytes; os outros -o gravam um instalador falso do agy
@@ -121,6 +132,7 @@ case "$1" in
   --prefix) echo "$P" ;;
   shellenv) echo "export PATH=\"$P/bin:\$PATH\"" ;;
   install)
+    [ -n "${FAKE_BREWFAIL:-}" ] && [ "$2" = "$FAKE_BREWFAIL" ] && exit 1
     case "$2" in
       python@3.14) cp "$FAKE_TPL/python3" "$P/bin/python3"; cp "$FAKE_TPL/python3" "$P/bin/python3.14" ;;
       node) cp "$FAKE_TPL/node" "$P/bin/node" ;;
@@ -130,6 +142,7 @@ case "$1" in
       pillow) touch "$FAKE_STATE/pillow" ;;
       yt-dlp) cp "$FAKE_TPL/yt-dlp" "$P/bin/yt-dlp" ;;
       whisper-cpp) cp "$FAKE_TPL/whisper-cli" "$P/bin/whisper-cli" ;;
+      auto-editor) cp "$FAKE_TPL/auto-editor" "$P/bin/auto-editor" ;;
       --cask) [ -n "${FAKE_CASKFAIL:-}" ] && exit 1
         case "$3" in handy) mkdir -p "$FAKE_HANDY_APP" ;; esac ;;
       postgresql@16) mkdir -p "$P/opt/postgresql@16/bin"
@@ -166,6 +179,8 @@ setup(){
       ffmpeg_drawtext) cp "$TPL/ffmpeg-full" "$S/userbin/ffmpeg" ;;
       ffmpeg_full_keg) mkdir -p "$S/prefix/opt/ffmpeg-full/bin"
         cp "$TPL/ffmpeg-full" "$S/prefix/opt/ffmpeg-full/bin/ffmpeg" ;;
+      autoeditor_velho) cp "$TPL/auto-editor-velho" "$S/userbin/auto-editor" ;;
+      capcut_velho) cp "$TPL/capcut-cli-velho" "$S/userbin/capcut-cli" ;;
       ytdlp_velho) cp "$TPL/yt-dlp-velho" "$S/userbin/yt-dlp"; touch "$S/state/ytdlp_velho" ;;
       modelo|modelo_errado)
         mkdir -p "$S/home/.cache/whisper"
@@ -227,22 +242,25 @@ zcount(){ grep -c "$1" "$S/home/.zprofile" 2>/dev/null || true; }
 out_has(){ grep -q "$1" "$OUT"; }
 
 echo "1. tudo presente"
-setup all brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup all brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run
 check "sai 0" '[ $RC = 0 ]'
 check "so consulta se o yt-dlp esta velho" '[ "$(brew_calls)" = "brew outdated yt-dlp;" ]'
 check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
+check "resumo: auto-editor pronto" 'out_has "auto-editor 31.6.0: ja estava pronto"'
+check "resumo: capcut-cli pronto" 'out_has "capcut-cli 0.25.0: ja estava pronto"'
+check "fim: aponta o tsa-editor --estado" 'out_has "rode tsa-editor --estado"'
 check ".zprofile intocado" '[ ! -e "$S/home/.zprofile" ]'
 
 echo "2. sem Python"
-setup nopy brew node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup nopy brew node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run
 check "sai 0" '[ $RC = 0 ]'
 check "so instala o Python" '[ "$(brew_changes)" = "brew install python@3.14;" ]'
 check "resumo mostra Python instalado" 'out_has "Python 3.14.0: instalado"'
 
 echo "3. sem Postgres"
-setup nopg brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup nopg brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run
 check "sai 0" '[ $RC = 0 ]'
 check "instala, linka e liga o postgresql@16" \
@@ -252,7 +270,7 @@ check "confere a versao do servidor" 'grep -q "server_version_num" "$S/log"'
 check "resumo mostra PostgreSQL ligado" 'out_has "PostgreSQL 16: instalado e ligado"'
 
 echo "4. psql presente e servidor parado"
-setup pgoff brew python3 node psql_cellar ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup pgoff brew python3 node psql_cellar ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run
 check "sai 1" '[ $RC = 1 ]'
 check "nao muda nada pelo brew" '[ -z "$(brew_changes)" ]'
@@ -275,7 +293,7 @@ check "nenhuma chamada registrada" '[ ! -s "$S/log" ]'
 check "avisa que pulou" 'out_has "pulada"'
 
 echo "7. brew fora do PATH, duas execucoes"
-setup offpath brew node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup offpath brew node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 BREW_ON_PATH=0
 run2
 check "1a: sai 0 e instala so o Python" '[ $RC1 = 0 ] && [ "$(brew_changes "$S/log1")" = "brew install python@3.14;" ]'
@@ -284,7 +302,7 @@ check "2a: acha o Python do brew" 'out_has "Python 3.14.0: ja estava pronto"'
 check ".zprofile com uma linha do shellenv" '[ "$(zcount "brew shellenv")" = 1 ]'
 
 echo "8. postgresql@16 ja instalado sem link, duas execucoes"
-setup keg brew python3 node keg16 pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup keg brew python3 node keg16 pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "nao instala nem linka" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ]'
@@ -292,7 +310,7 @@ check "resumo diz ligado" 'out_has "PostgreSQL: ja estava ligado"'
 check ".zprofile com uma linha do keg" '[ "$(zcount "opt/postgresql@16/bin")" = 1 ]'
 
 echo "9. conflito no brew link, duas execucoes"
-setup linkfail brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup linkfail brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2 FAKE_LINKFAIL=1
 check "1a: instala, tenta o link e liga" \
   '[ "$(brew_changes "$S/log1")" = "brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;" ]'
@@ -301,7 +319,7 @@ check "2a: nao instala nem linka" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
 check ".zprofile com uma linha do keg" '[ "$(zcount "opt/postgresql@16/bin")" = 1 ]'
 
 echo "10. /usr/bin/python3 sem Command Line Tools, duas execucoes"
-setup noclt brew node psql pg_isready pg_on xcode-select ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup noclt brew node psql pg_isready pg_on xcode-select ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 cp "$TPL/syspython3" "$S/userbin/python3"
 run2 TSA_SYS_PYTHON="$S/userbin/python3"
 check "1a: nao executa o python do sistema" '! grep -q "^syspython3" "$S/log1"'
@@ -310,7 +328,7 @@ check "1a: instala o Python" '[ "$(brew_changes "$S/log1")" = "brew install pyth
 check "2a: nao reinstala" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
 
 echo "11. porta 5432 ocupada sem psql, duas execucoes"
-setup port brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup port brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 PORT_BUSY="$(free_port)"
 /usr/bin/nc -lk "$PORT_BUSY" >/dev/null 2>&1 </dev/null &
 NC_PID=$!
@@ -323,7 +341,7 @@ check "informa a porta em uso" "out_has \"porta $PORT_BUSY ja esta em uso\""
 check "nunca diz instalado e ligado" '! grep -q "instalado e ligado" "$S"/out*'
 
 echo "12. Postgres.app fora do PATH, duas execucoes"
-setup pgapp brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup pgapp brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 mkdir -p "$S/Postgres.app/Contents/Versions/latest/bin"
 cp "$TPL/psql" "$S/Postgres.app/Contents/Versions/latest/bin/"
 run2
@@ -333,7 +351,7 @@ check "informa o app e o caminho real" 'out_has "Postgres.app/Contents/Versions/
 check ".zprofile intocado" '[ ! -e "$S/home/.zprofile" ]'
 
 echo "13. outra versao do brew sem link (postgresql@14), duas execucoes"
-setup keg14 brew python3 node keg14 ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup keg14 brew python3 node keg14 ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 1 nas duas" '[ $RC1 = 1 ] && [ $RC2 = 1 ]'
 check "nao instala nada" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ]'
@@ -341,7 +359,7 @@ check "informa o caminho do keg" 'out_has "opt/postgresql@14/bin"'
 check "da o comando de ligar" 'out_has "brew services start postgresql@14"'
 
 echo "14. servidor que responde nao e o 16"
-setup otherver brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup otherver brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run FAKE_PG_VERSION=150008
 check "sai 1" '[ $RC = 1 ]'
 check "nao diz instalado e ligado" '! out_has "instalado e ligado"'
@@ -350,15 +368,15 @@ check "informa outro servidor" 'out_has "quem respondeu foi outro servidor (vers
 echo "15. faltando tudo, segunda execucao nao reinstala"
 setup again brew curl hdiutil ditto xattr agy_login modelo
 run2
-check "1a: instala Python, Node, PostgreSQL, ffmpeg, ffmpeg-full, pillow, yt-dlp, whisper-cpp e Handy" \
-  '[ "$(brew_changes "$S/log1")" = "brew install python@3.14;brew install node;brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;brew install ffmpeg;brew install ffmpeg-full;brew install pillow;brew install yt-dlp;brew install whisper-cpp;brew install --cask handy;" ]'
+check "1a: instala Python, Node, PostgreSQL, ffmpeg, ffmpeg-full, pillow, auto-editor, yt-dlp, whisper-cpp e Handy" \
+  '[ "$(brew_changes "$S/log1")" = "brew install python@3.14;brew install node;brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;brew install ffmpeg;brew install ffmpeg-full;brew install pillow;brew install auto-editor;brew install yt-dlp;brew install whisper-cpp;brew install --cask handy;" ]'
 check "1a: instala o agy pelo instalador oficial" '[ -x "$S/home/.local/bin/agy" ]'
 check "1a: instala o VoiceStudio" '[ -d "$S/Applications/VoiceStudio.app" ]'
 check "1a: nao baixa o modelo, que ja estava pronto" '! grep -q "ggml-large-v3-turbo" "$S/log1"'
 check "2a: sai 0 sem mudar nada nem chamar o curl" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ] && ! grep -q "^curl" "$S/log"'
 
 echo "16. ffmpeg e agy presentes, com login, duas execucoes"
-setup midiaok brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup midiaok brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "nao muda nada pelo brew nem chama o curl" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ] && ! grep -q "^curl" "$S/log1" "$S/log"'
@@ -367,7 +385,7 @@ check "resumo: agy com login" 'out_has "Antigravity agy 1.2.5: ja estava pronto,
 check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
 
 echo "17. agy presente e sem login, duas execucoes"
-setup semlogin brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy yt-dlp whisper-cli modelo handy pillow voicestudio
+setup semlogin brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 1 nas duas" '[ $RC1 = 1 ] && [ $RC2 = 1 ]'
 check "nao instala nada" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ] && ! grep -q "^curl" "$S/log"'
@@ -376,7 +394,7 @@ check "resumo: instrucao de login" 'out_has "escolha Google OAuth"'
 check "resumo: aviso da janela" 'out_has "campo do codigo fica escondido"'
 
 echo "18. sem ffmpeg, duas execucoes"
-setup noff brew python3 node psql pg_isready pg_on agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup noff brew python3 node psql pg_isready pg_on agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "1a: instala o ffmpeg e, atras dele, a ffmpeg-full do drawtext" \
   '[ "$(brew_changes "$S/log1")" = "brew install ffmpeg;brew install ffmpeg-full;" ]'
@@ -384,7 +402,7 @@ check "1a: resumo diz instalado" 'grep -q "ffmpeg: instalado" "$S/out1"'
 check "2a: nao reinstala" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
 
 echo "19. sem agy, duas execucoes"
-setup noagy brew python3 node psql pg_isready pg_on ffmpeg_drawtext curl agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup noagy brew python3 node psql pg_isready pg_on ffmpeg_drawtext curl agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "1a: confere o endereco antes de baixar" 'grep -q "^curl -fsSI" "$S/log1"'
 check "1a: baixa e roda o instalador oficial" 'grep -q "^curl -fsSL" "$S/log1" && [ -x "$S/home/.local/bin/agy" ]'
@@ -394,7 +412,7 @@ check "2a: acha em ~/.local/bin sem baixar" '[ $RC2 = 0 ] && ! grep -q "^curl" "
 check ".zprofile com uma linha do ~/.local/bin" '[ "$(zcount ".local/bin")" = 1 ]'
 
 echo "20. sem agy e endereco fora do ar, duas execucoes"
-setup agyoff brew python3 node psql pg_isready pg_on ffmpeg_drawtext curl yt-dlp whisper-cli modelo handy pillow voicestudio
+setup agyoff brew python3 node psql pg_isready pg_on ffmpeg_drawtext curl yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2 FAKE_AGY_URL_OK=0
 check "sai 1 nas duas" '[ $RC1 = 1 ] && [ $RC2 = 1 ]'
 check "confere o endereco e nao baixa" 'grep -q "^curl -fsSI" "$S/log1" && ! grep -q "^curl -fsSL" "$S/log1"'
@@ -402,7 +420,7 @@ check "nao instala nada" '[ -z "$(brew_changes "$S/log1")" ] && [ ! -e "$S/home/
 check "resumo informa o endereco" 'out_has "nao respondeu 200"'
 
 echo "21. esteira de video pronta, duas execucoes"
-setup videook brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup videook brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "nao muda nada pelo brew nem chama o curl" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ] && ! grep -q "^curl" "$S/log1" "$S/log"'
@@ -414,21 +432,21 @@ check "resumo: permissao do Handy" 'out_has "conceda Microfone e Acessibilidade"
 check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
 
 echo "22. sem yt-dlp, duas execucoes"
-setup noyt brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login whisper-cli modelo handy pillow voicestudio
+setup noyt brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "1a: instala so o yt-dlp" '[ "$(brew_changes "$S/log1")" = "brew install yt-dlp;" ]'
 check "1a: resumo diz instalado" 'grep -q "yt-dlp 2026.08.19: instalado" "$S/out1"'
 check "2a: sai 0 e nao reinstala" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
 
 echo "23. sem whisper-cli, duas execucoes"
-setup nowhisper brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp modelo handy pillow voicestudio
+setup nowhisper brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "1a: instala so o whisper-cpp" '[ "$(brew_changes "$S/log1")" = "brew install whisper-cpp;" ]'
 check "1a: resumo diz instalado" 'grep -q "whisper-cli: instalado" "$S/out1"'
 check "2a: sai 0 e nao reinstala" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
 
 echo "24. modelo ausente na conferencia: avisa e nao baixa"
-setup semmodelo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy pillow voicestudio
+setup semmodelo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 1 nas duas" '[ $RC1 = 1 ] && [ $RC2 = 1 ]'
 check "nao baixa nada" '! grep -q "ggml-large-v3-turbo" "$S/log1" "$S/log"'
@@ -437,7 +455,7 @@ check "informa o tamanho" 'out_has "sao 1,6 GB"'
 check "da o comando para baixar depois" 'out_has "TSA_BAIXAR_MODELO=1 bash"'
 
 echo "25. modelo ausente com TSA_BAIXAR_MODELO=1, duas execucoes"
-setup baixamodelo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy pillow voicestudio
+setup baixamodelo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy pillow voicestudio auto-editor capcut-cli
 run2 TSA_BAIXAR_MODELO=1
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "1a: avisa o tamanho antes de baixar" 'grep -q "1,6 GB (4096 bytes) para baixar" "$S/out1"'
@@ -451,7 +469,7 @@ check "1a: resumo diz baixado" 'grep -q "Modelo ggml-large-v3-turbo.bin: baixado
 check "2a: nao baixa de novo" '! grep -q "ggml-large-v3-turbo" "$S/log"'
 
 echo "26. modelo com tamanho errado"
-setup modelotorto brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy modelo_errado pillow voicestudio
+setup modelotorto brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy modelo_errado pillow voicestudio auto-editor capcut-cli
 run
 check "1a: sai 1 e avisa o tamanho errado" '[ $RC = 1 ] && out_has "tem 99 bytes e o certo sao 4096"'
 check "1a: apaga o arquivo errado e nao baixa" \
@@ -461,7 +479,7 @@ check "2a: rebaixa e fica com o tamanho certo" \
   '[ $RC = 0 ] && [ "$(/usr/bin/stat -f %z "$S/home/.cache/whisper/ggml-large-v3-turbo.bin")" = 4096 ]'
 
 echo "27. download cortado no meio"
-setup modelocurto brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy pillow voicestudio
+setup modelocurto brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy pillow voicestudio auto-editor capcut-cli
 run TSA_BAIXAR_MODELO=1 FAKE_MODEL_WRITE=10
 check "sai 1" '[ $RC = 1 ]'
 check "nao renomeia o parcial" '[ ! -e "$S/home/.cache/whisper/ggml-large-v3-turbo.bin" ]'
@@ -470,7 +488,7 @@ check "avisa o download incompleto" 'out_has "Download incompleto: 10 de 4096 by
 check "diz que retoma de onde parou" 'out_has "retoma de onde parou"'
 
 echo "28. sem Handy, duas execucoes"
-setup nohandy brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo pillow voicestudio
+setup nohandy brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "1a: instala so o Handy pelo cask" '[ "$(brew_changes "$S/log1")" = "brew install --cask handy;" ]'
@@ -479,7 +497,7 @@ check "1a: resumo pede as permissoes" 'grep -q "conceda Microfone e Acessibilida
 check "2a: nao reinstala" '[ -z "$(brew_changes)" ]'
 
 echo "29. Handy nao instala: aviso que nao bloqueia"
-setup handyfail brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo pillow voicestudio
+setup handyfail brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo pillow voicestudio auto-editor capcut-cli
 run FAKE_CASKFAIL=1
 check "sai 0 mesmo assim" '[ $RC = 0 ]'
 check "resumo ainda diz tudo pronto" 'out_has "Tudo pronto"'
@@ -488,7 +506,7 @@ check "da o comando do cask" 'out_has "brew install --cask handy"'
 check "nao vira pendencia" '! out_has "Falta resolver"'
 
 echo "30. yt-dlp presente mas velho, duas execucoes"
-setup ytvelho brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login ytdlp_velho whisper-cli modelo handy pillow voicestudio
+setup ytvelho brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login ytdlp_velho whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "1a: so atualiza o yt-dlp" '[ "$(brew_changes "$S/log1")" = "brew upgrade yt-dlp;" ]'
@@ -500,7 +518,7 @@ check "2a: consulta e nao atualiza de novo" \
 check "2a: resumo diz ja estava pronto" 'out_has "yt-dlp 2026.08.19: ja estava pronto"'
 
 echo "31. ffmpeg sem drawtext: instala a ffmpeg-full, duas execucoes"
-setup nodrawtext brew python3 node psql pg_isready pg_on ffmpeg agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup nodrawtext brew python3 node psql pg_isready pg_on ffmpeg agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "1a: nao reinstala o ffmpeg, so acrescenta a ffmpeg-full" \
@@ -512,7 +530,7 @@ check ".zprofile com uma linha do keg da ffmpeg-full" '[ "$(zcount "opt/ffmpeg-f
 check "resumo ainda diz tudo pronto" 'out_has "Tudo pronto"'
 
 echo "32. ffmpeg-full ja instalada sem link, duas execucoes"
-setup drawtextkeg brew python3 node psql pg_isready pg_on ffmpeg ffmpeg_full_keg agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+setup drawtextkeg brew python3 node psql pg_isready pg_on ffmpeg ffmpeg_full_keg agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "nunca instala nada" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ]'
@@ -526,7 +544,7 @@ check "explica a saida pelo pillow" 'out_has "o texto sai como imagem pelo pillo
 check "nao conta como pendencia do drawtext" '! grep -q "✗ ffmpeg sem o filtro drawtext" "$OUT"'
 
 echo "34. sem pillow, duas execucoes"
-setup nopillow brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy voicestudio
+setup nopillow brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "1a: instala so o pillow" '[ "$(brew_changes "$S/log1")" = "brew install pillow;" ]'
@@ -535,7 +553,7 @@ check "2a: nao reinstala" '[ -z "$(brew_changes)" ]'
 check "2a: resumo diz ja estava pronto" 'out_has "pillow (texto como imagem): ja estava pronto"'
 
 echo "35. VoiceStudio ja instalado: nao baixa nada"
-setup vsok brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio curl hdiutil ditto xattr
+setup vsok brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio curl hdiutil ditto xattr auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "nao chama curl nem hdiutil" '! grep -qE "^(curl|hdiutil|ditto)" "$S/log1" "$S/log"'
@@ -544,7 +562,7 @@ check "avisa o ambiente Python do primeiro uso" 'out_has "ambiente Python de cer
 check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
 
 echo "36. sem VoiceStudio: confere o sha256 duas vezes e instala, duas execucoes"
-setup vsnovo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr
+setup vsnovo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "1a: baixa o SHA256SUMS antes do DMG" \
@@ -562,7 +580,7 @@ check "1a: nao usa o brew para o VoiceStudio" '[ -z "$(brew_changes "$S/log1")" 
 check "2a: acha instalado e nao baixa de novo" '! grep -qE "^(curl|hdiutil|ditto)" "$S/log"'
 
 echo "37. sha256 divergente na release: recusa antes de baixar o DMG"
-setup vssha brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr
+setup vssha brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
 run FAKE_VS_SUMS_SHA=0000000000000000000000000000000000000000000000000000000000000000
 check "nao baixa o DMG" '! grep -q "VoiceStudio_0.5.3_aarch64.dmg -o" "$S/log"'
 check "nao instala o app" '[ ! -e "$S/Applications/VoiceStudio.app" ]'
@@ -572,7 +590,7 @@ check "alerta sobre a copia falsa" 'out_has "existe copia falsa deste projeto co
 check "nao vira pendencia" '! out_has "Falta resolver"'
 
 echo "38. DMG adulterado: recusa depois de baixar"
-setup vsdmg brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr
+setup vsdmg brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
 run FAKE_VS_DMG_BYTES=1024
 check "baixa o DMG e nao monta" \
   'grep -q "VoiceStudio_0.5.3_aarch64.dmg -o" "$S/log" && ! grep -q "^hdiutil" "$S/log"'
@@ -582,13 +600,51 @@ check "diz que apagou o DMG" 'out_has "apaguei o DMG e nao instalei"'
 check "nao vira pendencia" '! out_has "Falta resolver"'
 
 echo "39. release sem o SHA256SUMS: nao baixa nada"
-setup vssemsums brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr
+setup vssemsums brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow curl hdiutil ditto xattr auto-editor capcut-cli
 run FAKE_VS_SUMS_OK=0
 check "nao baixa o DMG nem instala" \
   '! grep -q "VoiceStudio_0.5.3_aarch64.dmg -o" "$S/log" && [ ! -e "$S/Applications/VoiceStudio.app" ]'
 check "informa o arquivo que faltou" 'out_has "SHA256SUMS-macOS.Apple.Silicon.txt da release v0.5.3 nao baixou"'
 check "manda baixar so do endereco oficial" 'out_has "github.com/debpalash/VoiceStudio/releases"'
 check "nao vira pendencia" '! out_has "Falta resolver"'
+
+echo "40. sem auto-editor e sem capcut-cli, duas execucoes"
+setup avnovo brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio npm
+run2
+check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
+check "1a: instala so o auto-editor pelo brew" '[ "$(brew_changes "$S/log1")" = "brew install auto-editor;" ]'
+check "1a: instala o capcut-cli na versao fixada" 'grep -q "^npm install -g capcut-cli@0.25.0" "$S/log1"'
+check "1a: resumo diz os dois instalados" \
+  'grep -q "auto-editor 31.6.0: instalado" "$S/out1" && grep -q "capcut-cli 0.25.0: instalado$" "$S/out1"'
+check "2a: nao reinstala nenhum" '[ -z "$(brew_changes)" ] && ! grep -q "^npm install -g capcut-cli" "$S/log"'
+check "2a: resumo diz os dois prontos" \
+  'out_has "auto-editor 31.6.0: ja estava pronto" && out_has "capcut-cli 0.25.0: ja estava pronto"'
+
+echo "41. auto-editor e capcut-cli em outra versao"
+setup avvelho brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio npm autoeditor_velho capcut_velho
+run
+check "sai 0" '[ $RC = 0 ]'
+check "auto-editor: nao mexe pelo brew" '[ -z "$(brew_changes)" ]'
+check "auto-editor: avisa a versao conferida" 'out_has "auto-editor 30.1.0: a versao conferida pela TSA e a 31.6.0."'
+check "capcut-cli: troca para a versao fixada" \
+  'grep -q "^npm install -g capcut-cli@0.25.0" "$S/log" && out_has "capcut-cli 0.25.0: instalado (a versao anterior era 0.24.0)"'
+
+echo "42. auto-editor e capcut-cli falham: aviso que nao bloqueia"
+setup avfalha brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio npm
+run FAKE_BREWFAIL=auto-editor FAKE_NPMFAIL=1
+check "sai 0 mesmo assim" '[ $RC = 0 ]'
+check "resumo ainda diz tudo pronto" 'out_has "Tudo pronto"'
+check "avisa a falha do auto-editor" 'out_has "auto-editor: a instalacao falhou" && out_has "Para resolver: brew install auto-editor"'
+check "avisa a falha do capcut-cli" 'out_has "capcut-cli: a instalacao falhou" && out_has "Para resolver: npm install -g capcut-cli@0.25.0"'
+check "nao vira pendencia" '! out_has "Falta resolver"'
+
+echo "43. sem npm e sem brew: capcut-cli e auto-editor viram aviso"
+setup avsemnada python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
+run
+check "capcut-cli: avisa que falta o npm" 'out_has "capcut-cli: npm nao encontrado"'
+check "auto-editor: manda instalar o Homebrew" 'out_has "instale o Homebrew e rode: brew install auto-editor"'
+check "a unica pendencia e o Homebrew" \
+  'out_has "Falta resolver 1 item" && out_has "✗ Homebrew" && ! grep -qE "✗ (auto-editor|capcut-cli)" "$OUT"'
 
 echo
 echo "resultado: $PASS ok, $FAIL falhas"

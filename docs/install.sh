@@ -542,6 +542,58 @@ ensure_higgsfield(){
   fi
 }
 
+# Ferramentas leves do ACE Audiovisual (DEC-AV-03). Versao fixada; falha e aviso, nunca
+# pendencia. As outras quatro (premiere-mcp, whisperx, pycaps, openshorts) sao sob pedido,
+# pelo tsa-editor --instalar do app.
+AUTOEDITOR_VERSAO="31.6.0"
+CAPCUT_VERSAO="0.25.0"
+versao_de(){ "$1" --version </dev/null 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1; }
+
+# auto-editor (Unlicense): corte de silencio e sequencia para Premiere, Resolve e Final Cut.
+# O brew nao fixa versao: instala a stable, e versao diferente ja instalada vira aviso.
+ensure_autoeditor(){
+  local v
+  if command -v auto-editor >/dev/null 2>&1; then
+    v="$(versao_de auto-editor)"
+    if [ "$v" = "$AUTOEDITOR_VERSAO" ]; then
+      mark_ok "auto-editor $v: ja estava pronto"
+    else
+      mark_aviso "auto-editor ${v:-sem versao}: a versao conferida pela TSA e a $AUTOEDITOR_VERSAO." "brew upgrade auto-editor"
+    fi
+    return 0
+  fi
+  if ! ensure_brew; then
+    mark_aviso "auto-editor: nao instalado; o corte de silencio para o editor fica indisponivel." "instale o Homebrew e rode: brew install auto-editor"
+    return 0
+  fi
+  if brew_install auto-editor && command -v auto-editor >/dev/null 2>&1; then
+    mark_ok "auto-editor $(versao_de auto-editor): instalado"
+  else
+    mark_aviso "auto-editor: a instalacao falhou; o corte de silencio para o editor fica indisponivel." "brew install auto-editor"
+  fi
+  return 0
+}
+
+# capcut-cli (MIT): projeto do CapCut com legenda karaoke. Vem do npm, na versao fixada.
+ensure_capcut(){
+  local v=""
+  command -v capcut-cli >/dev/null 2>&1 && v="$(versao_de capcut-cli)"
+  if [ "$v" = "$CAPCUT_VERSAO" ]; then
+    mark_ok "capcut-cli $v: ja estava pronto"
+    return 0
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    mark_aviso "capcut-cli: npm nao encontrado; o projeto do CapCut pelo agente fica indisponivel." "brew install node && npm install -g capcut-cli@$CAPCUT_VERSAO"
+    return 0
+  fi
+  if npm install -g "capcut-cli@$CAPCUT_VERSAO" >/dev/null 2>&1 && [ "$(versao_de capcut-cli)" = "$CAPCUT_VERSAO" ]; then
+    mark_ok "capcut-cli $CAPCUT_VERSAO: instalado${v:+ (a versao anterior era $v)}"
+  else
+    mark_aviso "capcut-cli: a instalacao falhou; o projeto do CapCut pelo agente fica indisponivel." "npm install -g capcut-cli@$CAPCUT_VERSAO"
+  fi
+  return 0
+}
+
 ensure_ytdlp(){
   if command -v yt-dlp >/dev/null 2>&1; then
     find_brew || true
@@ -804,6 +856,8 @@ prepare_simulator(){
   ensure_pillow || true
   ensure_agy || true
   ensure_higgsfield || true
+  ensure_autoeditor || true
+  ensure_capcut || true
   ensure_ytdlp || true
   ensure_whisper || true
   ensure_whisper_model || true
@@ -812,6 +866,7 @@ prepare_simulator(){
 
   printf '\n\033[1mSimulador ACE e ACE Audiovisual: requisitos do Mac\033[0m\n'
   printf '%s' "$READY$PENDING$AVISOS"
+  printf '\nQuem edita no Adobe Premiere Pro ou no CapCut: rode tsa-editor --estado para ver o que falta.\n'
   if [ "$PENDING_N" = 0 ]; then
     printf '\nTudo pronto. O simulador ACE ja pode rodar pelo app.\n'
     return 0
