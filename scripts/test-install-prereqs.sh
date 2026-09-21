@@ -46,6 +46,7 @@ fake(){ # nome, corpo
 # tsa_editor.py --instalar: FAKE_EDITOR_RC forca o codigo de saida; sem ele, a primeira
 # vez instala e grava o estado, e as seguintes respondem que ja esta instalada.
 fake python3 '
+[ "${1:-}" = "-" ] && exec /usr/bin/python3 "$@"
 case "$*" in
   *"tsa_editor.py --instalar "*)
     id="${@: -1}"
@@ -83,6 +84,7 @@ esac
 exit 0'
 fake ditto 'cp -R "$1" "$2"'
 fake xattr 'exit 0'
+fake open 'exit 0'
 fake agy 'case "$*" in *--version*) echo 1.2.5;; esac; exit 0'
 fake yt-dlp 'echo 2026.08.19'
 fake yt-dlp-velho 'echo 2026.03.03'
@@ -232,6 +234,7 @@ run(){
     FAKE_VS_VOLUME="$S/volume" TSA_VS_APP="$S/Applications/VoiceStudio.app" \
     TSA_VS_BASE_URL="https://exemplo.invalido/voicestudio" TSA_VS_SHA256="$VS_SHA" \
     TSA_EDITOR_PY_ROOTS="$S/prefix/opt" TSA_AGY_SECURITY="$S/userbin/security" \
+    TSA_OPEN="$S/userbin/open" TSA_PERM_TIMEOUT="${PERM_TIMEOUT:-2}" \
     "$@" /bin/bash "$SCRIPT" >"$OUT" 2>&1 </dev/null &
   local pid=$! n=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -445,7 +448,7 @@ check "resumo: yt-dlp pronto" 'out_has "yt-dlp 2026.08.19: ja estava pronto"'
 check "resumo: whisper-cli pronto" 'out_has "whisper-cli: ja estava pronto"'
 check "resumo: modelo pronto" 'out_has "Modelo ggml-large-v3-turbo.bin: ja estava pronto"'
 check "resumo: Handy pronto" 'out_has "Handy (ditado por microfone): ja estava pronto"'
-check "resumo: permissao do Handy" 'out_has "conceda Microfone e Acessibilidade"'
+check "resumo: permissao do Handy" 'out_has "Microfone e Acessibilidade so a pessoa concede"'
 check "resumo diz tudo pronto" 'out_has "Tudo pronto"'
 
 echo "22. sem yt-dlp, duas execucoes"
@@ -510,7 +513,7 @@ run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "1a: instala so o Handy pelo cask" '[ "$(brew_changes "$S/log1")" = "brew install --cask handy;" ]'
 check "1a: resumo diz instalado" 'grep -q "Handy (ditado por microfone): instalado" "$S/out1"'
-check "1a: resumo pede as permissoes" 'grep -q "conceda Microfone e Acessibilidade" "$S/out1"'
+check "1a: resumo pede as permissoes" 'grep -q "Microfone e Acessibilidade so a pessoa concede" "$S/out1"'
 check "2a: nao reinstala" '[ -z "$(brew_changes)" ]'
 
 echo "29. Handy nao instala: aviso que nao bloqueia"
@@ -795,6 +798,96 @@ check "sai 0" '[ $RC = 0 ]'
 check "nao instala o VoiceStudio" '[ ! -d "$S/Applications/VoiceStudio.app" ]'
 check "resumo diz que ficou fora" 'out_has "VoiceStudio: fora, pela resposta de que nao edita video"'
 check "sem aviso do primeiro uso" '! out_has "baixa um ambiente Python de cerca de 1,8 GB"'
+
+# Pre-configuracao do Handy e do VoiceStudio, e o passo guiado das permissoes.
+handy_json(){ printf '%s' "$S/home/Library/Application Support/com.pais.handy/settings_store.json"; }
+vs_cfg(){ printf '%s' "$S/home/Library/Application Support/com.debpalash.omnivoice-studio/config.json"; }
+vs_prefs(){ printf '%s' "$S/home/Library/Application Support/OmniVoice/prefs.json"; }
+chave(){ /usr/bin/python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(json.dumps(d[sys.argv[2]]))' "$1" "$2" 2>/dev/null; }
+opens(){ grep -c '^open ' "$S/log" 2>/dev/null || true; }
+
+echo "56. Handy sem configuracao: grava o padrao da TSA"
+setup hcfg $BASE
+run
+check "sai 0" '[ $RC = 0 ]'
+check "gravou o settings_store.json" "[ -f \"$(handy_json)\" ]"
+check "em portugues" "[ \"\$(chave \"$(handy_json)\" settings | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin)[\"app_language\"])')\" = pt-BR ]"
+check "com as 59 chaves do arquivo real" "[ \"\$(chave \"$(handy_json)\" settings | /usr/bin/python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')\" = 59 ]"
+check "sem chave de API de ninguem" "! grep -qE 'sk-|pplx-' \"$(handy_json)\""
+check "resumo avisa" 'out_has "Handy: configurado no padrao da TSA"'
+
+echo "57. Handy ja configurado: nao toca no arquivo"
+setup hcfg2 $BASE
+mkdir -p "$S/home/Library/Application Support/com.pais.handy"
+printf '{"settings":{"app_language":"en"}}' >"$S/home/Library/Application Support/com.pais.handy/settings_store.json"
+run
+check "sai 0" '[ $RC = 0 ]'
+check "o arquivo ficou igual" "[ \"\$(cat \"$(handy_json)\")\" = '{\"settings\":{\"app_language\":\"en\"}}' ]"
+check "resumo diz que nao mexeu" 'out_has "Handy: ja tinha configuracao propria"'
+
+echo "58. VoiceStudio novo e editor de video: cria a configuracao com telemetria desligada"
+setup vscfg $BASE
+run TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe
+check "sai 0" '[ $RC = 0 ]'
+check "gravou o config.json" "[ -f \"$(vs_cfg)\" ]"
+check "setup_complete verdadeiro" "[ \"\$(chave \"$(vs_cfg)\" setup_complete)\" = true ]"
+check "atalho padrao" "[ \"\$(chave \"$(vs_cfg)\" dictation_shortcut)\" = '\"CmdOrCtrl+Shift+Space\"' ]"
+check "telemetria desligada" "[ \"\$(chave \"$(vs_prefs)\" analytics_enabled)\" = false ]"
+check "sem installation_id" "! grep -q installation_id \"$(vs_prefs)\""
+check "resumo avisa" 'out_has "VoiceStudio: configurado no padrao da TSA; telemetria desligada"'
+
+echo "59. VoiceStudio ja usado: so a telemetria muda, o resto fica"
+setup vscfg2 $BASE
+mkdir -p "$S/home/Library/Application Support/com.debpalash.omnivoice-studio" "$S/home/Library/Application Support/OmniVoice"
+printf '{"region":"eu","dictation_shortcut":"Alt+X","setup_complete":true}' >"$(vs_cfg)"
+printf '{"analytics_enabled":true,"asr_backend":"whisper.cpp","installation_id":"abc-123"}' >"$(vs_prefs)"
+run TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe
+check "sai 0" '[ $RC = 0 ]'
+check "config.json intocado" "[ \"\$(cat \"$(vs_cfg)\")\" = '{\"region\":\"eu\",\"dictation_shortcut\":\"Alt+X\",\"setup_complete\":true}' ]"
+check "telemetria virou falsa" "[ \"\$(chave \"$(vs_prefs)\" analytics_enabled)\" = false ]"
+check "o resto das preferencias ficou" "[ \"\$(chave \"$(vs_prefs)\" asr_backend)\" = '\"whisper.cpp\"' ] && [ \"\$(chave \"$(vs_prefs)\" installation_id)\" = '\"abc-123\"' ]"
+check "resumo diz o que fez" 'out_has "a configuracao que ja existia ficou intacta; telemetria desligada, sem mexer no resto"'
+
+echo "60. quem nao edita video: o VoiceStudio nao e configurado"
+setup vscfg3 $BASE
+run TSA_EDITOR_VIDEO=nao
+check "sai 0" '[ $RC = 0 ]'
+check "nao cria config nem prefs" "[ ! -e \"$(vs_cfg)\" ] && [ ! -e \"$(vs_prefs)\" ]"
+check "resumo nao fala em telemetria" '! out_has "telemetria"'
+
+echo "61. permissoes sem terminal: ensina, nao abre tela e nao espera"
+setup permsemtty $BASE open
+run
+check "sai 0 e nao trava" '[ $RC = 0 ] && ! out_has TRAVOU'
+check "mostra os tres passos" 'out_has "1. Em Microfone, ligue a chave do Handy." && out_has "2. Em Acessibilidade" && out_has "3. Abra o Handy uma vez"'
+check "nao abre nenhuma tela" '[ "$(opens)" = 0 ]'
+check "manda abrir na mao" 'out_has "Abra na mao: Ajustes do Sistema"'
+check "diz que nao espera" 'out_has "Sem terminal para esperar aqui"'
+check "nao pede Enter" '! out_has "Aperte Enter"'
+
+echo "62. permissoes com terminal: abre as duas telas, espera o Enter e segue"
+setup permtty $BASE open
+printf '\n' >"$S/tty"
+run TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
+check "sai 0 e nao trava" '[ $RC = 0 ] && ! out_has TRAVOU'
+check "abre Microfone e Acessibilidade" \
+  'grep -q "Privacy_Microphone" "$S/log" && grep -q "Privacy_Accessibility" "$S/log" && [ "$(opens)" = 2 ]'
+check "pede o Enter com o tempo limite" 'out_has "Aperte Enter quando terminar" && out_has "sigo em 2 s"'
+check "depois do Enter, so o lembrete do Handy" 'out_has "! Handy: nao da para conferir a permissao por aqui"'
+check "o resumo veio antes do passo guiado" \
+  '[ "$(grep -n "Tudo pronto\|1. Em Microfone" "$OUT" | head -1 | grep -c "Tudo pronto")" = 1 ]'
+
+echo "63. permissoes: sem Handy nao aparece; com open quebrado, so o texto"
+setup permsemhandy brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo pillow voicestudio auto-editor capcut-cli open
+printf '\n' >"$S/tty"
+run TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao FAKE_CASKFAIL=1
+check "sem Handy: nao mostra o passo guiado" '! out_has "1. Em Microfone"'
+setup permopenruim $BASE
+printf '\n' >"$S/tty"
+run TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
+check "open que nao existe: sai 0 e nao trava" '[ $RC = 0 ] && ! out_has TRAVOU'
+check "cai no caminho em texto" 'out_has "Abra na mao: Ajustes do Sistema"'
+check "ainda espera o Enter" 'out_has "Aperte Enter quando terminar"'
 
 echo "resultado: $PASS ok, $FAIL falhas"
 [ "$FAIL" = 0 ]
