@@ -69,7 +69,7 @@ HANDY_APP="${TSA_HANDY_APP:-/Applications/Handy.app}"
 # Onde o Handy guarda a configuracao (conferido no Mac do Cadu em 21/09/2026).
 HANDY_SETTINGS="$HOME/Library/Application Support/com.pais.handy/settings_store.json"
 HANDY_PERMISSOES="Microfone e Acessibilidade so a pessoa concede; o passo guiado no fim desta instalacao abre as duas telas"
-HANDY_LEMBRETE="nao da para conferir a permissao por aqui, porque o macOS nao deixa nenhum script ler o banco de permissoes. Se o ditado nao escrever, volte em $PERM_CAMINHO e confira a chave do Handy."
+HANDY_TESTE="Teste: aperte option+espaco e fale; se nao escrever, confira as chaves em $PERM_CAMINHO."
 HANDY_OK=0   # 1 quando o Handy esta no lugar; so ai o passo guiado aparece
 
 # ---- ACE Audiovisual
@@ -1214,9 +1214,16 @@ passo_permissoes(){
     printf '\nSem terminal para esperar aqui. Faca os tres passos quando puder.\n'
     return 0
   fi
-  printf '\nAperte Enter quando terminar. Enter tambem pula, Ctrl-C sai, e sozinho eu sigo em %s s.\n' "$PERM_ESPERA"
-  read -r -t "$PERM_ESPERA" _ <"$TTY_DEV" || true
-  printf '\n  ! Handy: %s\n' "$HANDY_LEMBRETE"
+  printf '\nLigou as duas chaves? Enter para sim; digite n se pulou. Ctrl-C sai, e sozinho eu sigo em %s s.\n' "$PERM_ESPERA"
+  local r=""
+  read -r -t "$PERM_ESPERA" r <"$TTY_DEV" || true
+  case "$r" in
+    [nN]|[nN][aA][oO]|[nN][oO])
+      printf '\n  ! Handy: sem as duas chaves o ditado nao escreve. Quando quiser: %s\n' "$PERM_CAMINHO" ;;
+    *)
+      # Quem confere e a pessoa: o macOS nao deixa nenhum script ler o banco de permissoes.
+      printf '\n  \033[0;32m✓\033[0m Handy: permissoes confirmadas por voce. %s\n' "$HANDY_TESTE" ;;
+  esac
   return 0
 }
 

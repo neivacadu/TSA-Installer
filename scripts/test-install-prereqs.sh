@@ -872,8 +872,9 @@ run TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
 check "sai 0 e nao trava" '[ $RC = 0 ] && ! out_has TRAVOU'
 check "abre Microfone e Acessibilidade" \
   'grep -q "Privacy_Microphone" "$S/log" && grep -q "Privacy_Accessibility" "$S/log" && [ "$(opens)" = 2 ]'
-check "pede o Enter com o tempo limite" 'out_has "Aperte Enter quando terminar" && out_has "sigo em 2 s"'
-check "depois do Enter, so o lembrete do Handy" 'out_has "! Handy: nao da para conferir a permissao por aqui"'
+check "pede a confirmacao com o tempo limite" 'out_has "Ligou as duas chaves?" && out_has "sigo em 2 s"'
+check "Enter confirma e nao vira pendencia" 'out_has "Handy: permissoes confirmadas por voce" && ! out_has "! Handy: sem as duas chaves"'
+check "ensina o teste do ditado" 'out_has "aperte option+espaco e fale"'
 check "o resumo veio antes do passo guiado" \
   '[ "$(grep -n "Tudo pronto\|1. Em Microfone" "$OUT" | head -1 | grep -c "Tudo pronto")" = 1 ]'
 
@@ -887,7 +888,16 @@ printf '\n' >"$S/tty"
 run TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
 check "open que nao existe: sai 0 e nao trava" '[ $RC = 0 ] && ! out_has TRAVOU'
 check "cai no caminho em texto" 'out_has "Abra na mao: Ajustes do Sistema"'
-check "ainda espera o Enter" 'out_has "Aperte Enter quando terminar"'
+check "ainda pede a confirmacao" 'out_has "Ligou as duas chaves?"'
+
+
+echo "64. permissoes: quem responde n fica com o aviso, nao com o ok"
+setup permnao $BASE open
+printf 'n\n' >"$S/tty"
+run TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
+check "sai 0" '[ $RC = 0 ]'
+check "avisa que o ditado nao escreve sem as chaves" 'out_has "! Handy: sem as duas chaves"'
+check "nao diz confirmado" '! out_has "permissoes confirmadas por voce"'
 
 echo "resultado: $PASS ok, $FAIL falhas"
 [ "$FAIL" = 0 ]
