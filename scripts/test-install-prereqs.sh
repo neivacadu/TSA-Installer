@@ -555,6 +555,8 @@ run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
 check "nunca instala nada" '[ -z "$(brew_changes "$S/log1")$(brew_changes)" ]'
 check ".zprofile com uma linha do keg da ffmpeg-full" '[ "$(zcount "opt/ffmpeg-full/bin")" = 1 ]'
+check "nao avisa falta de drawtext: o keg resolve" '! out_has "ffmpeg sem o filtro drawtext"'
+check "resumo diz de onde veio o drawtext" 'out_has "ffmpeg com o filtro drawtext"'
 
 echo "33. sem brew e sem drawtext: avisa e nao vira pendencia"
 setup drawtextnobrew python3 node psql pg_isready pg_on ffmpeg yt-dlp whisper-cli modelo handy pillow voicestudio agy agy_login

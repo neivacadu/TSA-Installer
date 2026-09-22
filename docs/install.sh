@@ -345,6 +345,11 @@ ensure_ffmpeg(){
 }
 
 ffmpeg_tem_drawtext(){ ffmpeg -hide_banner -filters </dev/null 2>/dev/null | grep -qw drawtext; }
+# O keg da ffmpeg-full resolve mesmo quando o PATH devolve o ffmpeg comum: o brew shellenv
+# roda de novo depois do nosso .zprofile e volta para a frente. Os comandos do TSA preferem
+# este binario, entao ele instalado ja basta.
+ffmpeg_keg(){ load_brew_prefix; printf '%s' "${BREW_PREFIX:-/opt/homebrew}/opt/$FFMPEG_FULL_FORMULA/bin/ffmpeg"; }
+keg_tem_drawtext(){ local k; k="$(ffmpeg_keg)"; [ -x "$k" ] && "$k" -hide_banner -filters </dev/null 2>/dev/null | grep -qw drawtext; }
 
 # drawtext e o filtro que escreve texto na tela, e ele so existe quando o ffmpeg foi
 # compilado com freetype. A formula ffmpeg do brew nao traz freetype: quem traz e a
@@ -354,6 +359,11 @@ ffmpeg_tem_drawtext(){ ffmpeg -hide_banner -filters </dev/null 2>/dev/null | gre
 ensure_drawtext(){
   if ffmpeg_tem_drawtext; then
     mark_ok "ffmpeg com o filtro drawtext: ja estava pronto"
+    return 0
+  fi
+  if keg_tem_drawtext; then
+    path_persistente "$(dirname "$(ffmpeg_keg)")"
+    mark_ok "ffmpeg com o filtro drawtext: pela $FFMPEG_FULL_FORMULA ($(dirname "$(ffmpeg_keg)"))"
     return 0
   fi
   local fix="brew install $FFMPEG_FULL_FORMULA"
@@ -371,7 +381,7 @@ ensure_drawtext(){
   if [ -x "$kegbin/ffmpeg" ]; then
     path_persistente "$kegbin"
   fi
-  if ffmpeg_tem_drawtext; then
+  if ffmpeg_tem_drawtext || keg_tem_drawtext; then
     mark_ok "ffmpeg com o filtro drawtext: instalado pela formula $FFMPEG_FULL_FORMULA ($kegbin)"
   else
     mark_aviso "$falta" "$fix"
