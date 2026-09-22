@@ -25,6 +25,8 @@ done
 
 # sha256 real dos 2048 bytes que o curl falso grava como DMG do VoiceStudio
 VS_SHA="$(head -c 2048 /dev/zero | shasum -a 256 | awk '{print $1}')"
+# sha256 real dos 4096 bytes que o curl falso grava como DMG do TSA
+TSA_SHA="$(head -c 4096 /dev/zero | shasum -a 256 | awk '{print $1}')"
 
 # porta livre para os cenarios normais; a porta real 5432 desta maquina fica fora do teste
 free_port(){
@@ -78,13 +80,36 @@ case "$*" in
 esac
 exit 0'
 fake hdiutil 'case "$1" in
-  attach) mkdir -p "$FAKE_VS_VOLUME/VoiceStudio.app/Contents"
-    printf "/dev/disk9\tGUID_partition_scheme\t\n/dev/disk9s1\tApple_HFS\t%s\n" "$FAKE_VS_VOLUME" ;;
+  attach) case "$*" in
+      *tsa-macos-*)
+        D="$FAKE_TSA_VOLUME/TSA.app/Contents/Resources/tsa"
+        mkdir -p "$D"
+        printf "{\"schema_version\":\"tsa.dna.release/v1\",\"manifest\":{\"version\":\"%s\"}}\n" \
+          "${FAKE_TSA_DNA:-9.9.9}" >"$D/dna-embedded-release.json"
+        printf "/dev/disk9\tGUID_partition_scheme\t\n/dev/disk9s1\tApple_HFS\t%s\n" "$FAKE_TSA_VOLUME" ;;
+      *) mkdir -p "$FAKE_VS_VOLUME/VoiceStudio.app/Contents"
+        printf "/dev/disk9\tGUID_partition_scheme\t\n/dev/disk9s1\tApple_HFS\t%s\n" "$FAKE_VS_VOLUME" ;;
+    esac ;;
 esac
 exit 0'
 fake ditto 'cp -R "$1" "$2"'
 fake xattr 'exit 0'
-fake open 'exit 0'
+# open do .app: o app de verdade volta a rodar e grava o DNA ativo ao abrir.
+fake open '
+case "$1" in
+  *.app)
+    touch "$FAKE_STATE/tsa_rodando"
+    if [ -n "${FAKE_OPEN_DNA:-}" ]; then
+      D="$HOME/Library/Application Support/TSA/dna"
+      mkdir -p "$D"
+      printf "{\"manifest\":{\"version\":\"%s\"}}\n" "$FAKE_OPEN_DNA" >"$D/current.json"
+    fi ;;
+esac
+exit 0'
+fake pgrep '[ -e "$FAKE_STATE/tsa_rodando" ]'
+# quit pelo caminho educado: o app sai, sem kill -9
+fake osascript 'rm -f "$FAKE_STATE/tsa_rodando"'
+fake defaults 'echo com.teste.tsa'
 fake agy 'case "$*" in *--version*) echo 1.2.5;; esac; exit 0'
 fake yt-dlp 'echo 2026.08.19'
 fake yt-dlp-velho 'echo 2026.03.03'
@@ -106,6 +131,18 @@ esac'
 fake curl '
 case "$*" in
   *-fsSI*) [ "${FAKE_AGY_URL_OK:-1}" = 1 ] ;;
+  *tsa-macos-*)
+    prev=""; out=""
+    for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+    [ -n "$out" ] || exit 0
+    head -c 4096 /dev/zero >"$out"
+    ;;
+  *checksums-sha256.txt*)
+    prev=""; out=""
+    for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+    [ -n "$out" ] || exit 0
+    { echo "$FAKE_TSA_SHA  tsa-macos-arm64.dmg"; echo "$FAKE_TSA_SHA  tsa-macos-x64.dmg"; } >"$out"
+    ;;
   *SHA256SUMS*)
     prev=""; out=""
     for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
@@ -190,6 +227,10 @@ setup(){
       agy_login_novo) mkdir -p "$S/home/.gemini/antigravity-cli"; echo 'falso' >"$S/home/.gemini/antigravity-cli/antigravity-oauth-token" ;;
       agy_keychain) printf '#!/bin/bash\n[ "$*" = "find-generic-password -s gemini -a antigravity" ]\n' >"$S/userbin/security"; chmod +x "$S/userbin/security" ;;
       handy) mkdir -p "$S/Applications/Handy.app" ;;
+      tsa_instalado) mkdir -p "$S/Applications/TSA.app/Contents" ;;
+      tsa_rodando) touch "$S/state/tsa_rodando" ;;
+      dna_velho) mkdir -p "$S/home/Library/Application Support/TSA/dna"
+        echo '{"manifest":{"version":"1.0.0"}}' >"$S/home/Library/Application Support/TSA/dna/current.json" ;;
       voicestudio) mkdir -p "$S/Applications/VoiceStudio.app" ;;
       pillow) touch "$S/state/pillow" ;;
       py312_keg) mkdir -p "$S/prefix/opt/python@3.12/bin"
@@ -235,6 +276,7 @@ run(){
     TSA_VS_BASE_URL="https://exemplo.invalido/voicestudio" TSA_VS_SHA256="$VS_SHA" \
     TSA_EDITOR_PY_ROOTS="$S/prefix/opt" TSA_AGY_SECURITY="$S/userbin/security" \
     TSA_OPEN="$S/userbin/open" TSA_PERM_TIMEOUT="${PERM_TIMEOUT:-2}" \
+    FAKE_TSA_VOLUME="$S/volume-tsa" FAKE_TSA_SHA="$TSA_SHA" \
     "$@" /bin/bash "$SCRIPT" >"$OUT" 2>&1 </dev/null &
   local pid=$! n=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -900,6 +942,62 @@ run TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
 check "sai 0" '[ $RC = 0 ]'
 check "avisa que o ditado nao escreve sem as chaves" 'out_has "! Handy: sem as duas chaves"'
 check "nao diz confirmado" '! out_has "permissoes confirmadas por voce"'
+
+# ---- troca do app com o TSA aberto e conferencia do DNA (decisao do Cadu, 22/09/2026)
+# Instala de verdade no cenario: o app vai para $S/Applications, nunca para /Applications.
+run_install(){
+  run TSA_ONLY_PREREQS=0 TSA_APP_DEST="$S/Applications" TSA_QUIT_WAIT=3 TSA_DNA_WAIT=2 \
+    TSA_PGREP="$S/userbin/pgrep" TSA_OSASCRIPT="$S/userbin/osascript" \
+    TSA_DEFAULTS="$S/userbin/defaults" "$@"
+}
+INST="$BASE curl hdiutil ditto xattr open pgrep osascript defaults"
+
+echo "65. TSA aberto e resposta sim: fecha, instala, reabre e confere o DNA"
+setup trocasim $INST tsa_instalado tsa_rodando
+printf 's\n' >"$S/tty"
+run_install TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao FAKE_OPEN_DNA=9.9.9
+check "sai 0 e nao trava" '[ $RC = 0 ] && ! out_has TRAVOU'
+check "avisa que o DNA so entra depois de fechar e abrir" 'out_has "O TSA esta aberto"'
+check "pergunta antes de trocar" 'out_has "Posso fechar o TSA agora?"'
+check "fecha pelo quit, com o bundle id do Info.plist" \
+  'grep -q "^osascript -e tell application id .com.teste.tsa. to quit" "$S/log"'
+check "nunca usa kill" '! grep -q "^kill" "$S/log"'
+check "confirma que fechou" 'out_has "TSA fechado"'
+check "instala o app" '[ -d "$S/Applications/TSA.app" ]'
+check "reabre o app instalado" 'grep -q "^open $S/Applications/TSA.app" "$S/log"'
+check "resumo diz que o DNA esta ativo" 'out_has "DNA 9.9.9: ativo"'
+check "DNA nao vira pendencia" 'out_has "Tudo pronto"'
+
+echo "66. TSA aberto e resposta nao: nao fecha, nao reabre e avisa o DNA velho"
+setup trocanao $INST tsa_instalado tsa_rodando dna_velho
+printf 'n\n' >"$S/tty"
+run_install TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
+check "sai 0 e nao trava" '[ $RC = 0 ] && ! out_has TRAVOU'
+check "nao fecha o TSA" '! grep -q "^osascript" "$S/log"'
+check "diz que nao fechou e o que fazer" \
+  'out_has "Nao fechei o TSA" && out_has "feche o TSA com Cmd+Q e abra de novo"'
+check "instala mesmo assim" '[ -d "$S/Applications/TSA.app" ]'
+check "nao reabre o app" '! grep -q "^open $S/Applications/TSA.app" "$S/log"'
+check "avisa que o DNA novo nao foi aplicado" \
+  'out_has "DNA 9.9.9: ainda nao foi aplicado; o ativo continua sendo o 1.0.0"'
+check "aviso, nunca pendencia" '! grep -q "✗ DNA" "$OUT"'
+
+echo "67. TSA fechado: nao pergunta, instala e o DNA ausente vira aviso"
+setup trocafechado $INST
+printf 's\n' >"$S/tty"
+run_install TSA_TTY="$S/tty" TSA_EDITOR_VIDEO=nao
+check "sai 0 e nao trava" '[ $RC = 0 ] && ! out_has TRAVOU'
+check "nao pergunta nada sobre fechar" '! out_has "Posso fechar o TSA agora?"'
+check "nao chama o quit" '! grep -q "^osascript" "$S/log"'
+check "instala o app" '[ -d "$S/Applications/TSA.app" ]'
+check "nao abre o app sozinho" '! grep -q "^open $S/Applications/TSA.app" "$S/log"'
+check "avisa que este Mac nao tem DNA ativo" 'out_has "DNA 9.9.9: ainda nao foi aplicado; este Mac nao tem DNA ativo"'
+
+echo "68. sem instalar o app: nenhuma conferencia de DNA"
+setup dnasemapp $BASE
+run
+check "sai 0" '[ $RC = 0 ]'
+check "o resumo nao fala em DNA" '! out_has "DNA"'
 
 echo "resultado: $PASS ok, $FAIL falhas"
 [ "$FAIL" = 0 ]

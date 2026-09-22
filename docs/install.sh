@@ -2,7 +2,9 @@
 # Instalador do TSA (macOS) — comando unico, sem GitHub CLI e sem conta no GitHub.
 #   curl -fsSL https://neivacadu.github.io/TSA-Installer/install.sh | bash
 # 1. Baixa o app do release publico, confere o SHA-256, instala e remove a quarentena.
-#    O DNA da TSA ja vai embutido e assinado dentro do app.
+#    O DNA da TSA ja vai embutido e assinado dentro do app. Com o TSA aberto, pede para
+#    fechar antes da troca (quit, nunca kill -9), reabre depois e confere, no fim, se o
+#    DNA ativo e o do app novo: o DNA embutido so e aplicado quando o app abre.
 # 2. Prepara o Mac para o simulador ACE, para a leitura de midia e para o ACE Audiovisual:
 #    Python 3.10+, Node, PostgreSQL ligado, ffmpeg (com o filtro drawtext), pillow,
 #    Antigravity CLI (agy), yt-dlp, whisper-cpp, o modelo de transcricao, o Handy e o
@@ -110,6 +112,27 @@ EDITOR_VIDEO=""
 APP_INSTALADO=""   # preenchido pelo install_app
 AGY_PENDENTE=""    # login do agy faltando
 
+# ---- Troca do app com o TSA aberto (decisao do Cadu, 22/09/2026)
+# O DNA embutido so vira o DNA ativo quando o app abre. Trocar o .app com o TSA rodando
+# deixa a pessoa com o DNA velho sem saber. Entao o instalador pergunta, fecha pelo caminho
+# educado (quit, nunca kill -9), instala, reabre e confere o DNA ativo no fim.
+APP_DEST="${TSA_APP_DEST:-/Applications}"   # gancho do teste; em uso normal e /Applications
+APP_BUNDLE_ID="${TSA_BUNDLE_ID:-com.trafegosa.orca-tsa}"   # reserva; o real vem do Info.plist
+APP_DEFAULTS="${TSA_DEFAULTS:-/usr/bin/defaults}"
+APP_OSASCRIPT="${TSA_OSASCRIPT:-/usr/bin/osascript}"
+APP_PGREP="${TSA_PGREP:-/usr/bin/pgrep}"
+# Qualquer processo do bundle serve para saber que o app esta de pe: quando o TSA sai, os
+# helpers saem junto. O processo principal nem sempre mostra a linha de comando ao pgrep.
+APP_PROC="${TSA_APP_PROC:-$APP_NAME/Contents}"
+APP_QUIT_WAIT="${TSA_QUIT_WAIT:-60}"   # segundos de espera pelo TSA fechar
+APP_ABERTO=0                           # 1 quando o TSA estava rodando antes da troca
+APP_REABRIR=0                          # 1 so quando a pessoa autorizou fechar
+DNA_WAIT="${TSA_DNA_WAIT:-60}"         # segundos de espera pelo app gravar o DNA ativo
+# Onde o app guarda o DNA ativo: dnaDataDir(userData) + current.json (src/main/dna).
+DNA_ATIVO="${TSA_DNA_ATIVO:-$HOME/Library/Application Support/TSA/dna/current.json}"
+DNA_EMBUTIDO_REL="Contents/Resources/tsa/dna-embedded-release.json"
+DNA_REABRIR="feche o TSA com Cmd+Q e abra de novo"
+
 TMP_DIR=""
 MOUNT=""
 VS_TMP=""
@@ -129,6 +152,79 @@ cleanup(){
 trap cleanup EXIT
 
 # ---------------------------------------------------------------- app
+
+# O app que vale para fechar e para conferir o DNA: o recem-instalado ou o que ja estava.
+app_alvo(){
+  local c
+  for c in "${APP_INSTALADO:-}" "$APP_DEST/$APP_NAME" "$HOME/Applications/$APP_NAME"; do
+    [ -n "$c" ] && [ -d "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+app_rodando(){ "$APP_PGREP" -f "$APP_PROC" >/dev/null 2>&1; }
+
+# O bundle id real sai do Info.plist do app instalado; sem ele, fica o da TSA.
+app_bundle_id(){
+  local app id=""
+  app="$(app_alvo || true)"
+  [ -n "$app" ] && [ -x "$APP_DEFAULTS" ] &&
+    id="$("$APP_DEFAULTS" read "$app/Contents/Info" CFBundleIdentifier 2>/dev/null || true)"
+  printf '%s' "${id:-$APP_BUNDLE_ID}"
+}
+
+# Fecha pelo caminho educado e espera ate APP_QUIT_WAIT segundos. Nunca kill -9: o app
+# grava sessao e estado na saida. Devolve 0 so quando o processo saiu mesmo.
+fechar_app(){
+  local i=0
+  "$APP_OSASCRIPT" -e "tell application id \"$(app_bundle_id)\" to quit" >/dev/null 2>&1 || true
+  while [ "$i" -lt "$APP_QUIT_WAIT" ]; do
+    app_rodando || return 0
+    sleep 1
+    i=$((i + 1))
+  done
+  ! app_rodando
+}
+
+# Antes de trocar o .app: se o TSA esta aberto, avisa e pede para fechar. Sem terminal,
+# nao pergunta: avisa e segue. Recusa ou falha ao fechar nao derruba a instalacao.
+preparar_troca_app(){
+  local r=""
+  app_rodando || return 0
+  APP_ABERTO=1
+  printf '\n'
+  warn "O TSA esta aberto. O DNA novo so e aplicado quando o app abre, entao a troca so vale depois de fechar e abrir."
+  if ! has_tty; then
+    warn "Sem terminal para perguntar. Vou instalar assim mesmo: depois, $DNA_REABRIR."
+    return 0
+  fi
+  printf 'Posso fechar o TSA agora? [S/n] '
+  read -r r <"$TTY_DEV" || r=""
+  case "$r" in
+    [nN]|[nN][aA][oO]|[nN][oO])
+      warn "Nao fechei o TSA. A troca so vale depois: $DNA_REABRIR."
+      return 0 ;;
+  esac
+  APP_REABRIR=1
+  say "Fechando o TSA..."
+  if fechar_app; then
+    ok "TSA fechado"
+  else
+    warn "O TSA nao fechou em ${APP_QUIT_WAIT} s. Sigo com a instalacao; para valer, $DNA_REABRIR."
+  fi
+}
+
+# Reabre o app depois da troca, e so quando a pessoa autorizou fechar.
+reabrir_app(){
+  [ "$APP_REABRIR" = 1 ] || return 0
+  [ -n "$APP_INSTALADO" ] || return 0
+  say "Abrindo o TSA de novo..."
+  if "$PERM_OPEN" "$APP_INSTALADO" >/dev/null 2>&1; then
+    ok "TSA aberto"
+  else
+    warn "Nao consegui abrir o TSA daqui. Abra pelo Launchpad."
+  fi
+}
 
 install_app(){
   command -v curl >/dev/null || die "curl nao encontrado."
@@ -155,14 +251,17 @@ install_app(){
   ok "Download integro"
 
   say "Instalando..."
-  MOUNT="$(hdiutil attach "$TMP_DIR/$artifact" -nobrowse -readonly </dev/null | sed -n 's#.*\(/Volumes/.*\)$#\1#p' | head -1)"
+  # A ultima coluna da linha montada e o ponto de montagem, como no VoiceStudio.
+  MOUNT="$(hdiutil attach "$TMP_DIR/$artifact" -nobrowse -readonly </dev/null | awk -F'\t' '$NF ~ "^/" {m=$NF} END{print m}')"
   [ -n "$MOUNT" ] || die "Nao foi possivel montar o instalador."
   src_app="$(find "$MOUNT" -maxdepth 1 -name '*.app' | head -1)"
   [ -n "$src_app" ] || die "Nenhum .app encontrado no pacote."
 
-  dest="/Applications"
+  dest="$APP_DEST"
   [ -w "$dest" ] || { dest="$HOME/Applications"; mkdir -p "$dest"; }
   app_target="$dest/$APP_NAME"
+  # Trocar o .app com o TSA rodando deixa o DNA velho no ar: pergunta e fecha antes.
+  preparar_troca_app
   rm -rf "$app_target"
   ditto "$src_app" "$app_target" || die "Falha ao copiar o app."
   APP_INSTALADO="$app_target"
@@ -170,6 +269,7 @@ install_app(){
   codesign --force --deep --sign - "$app_target" >/dev/null 2>&1 || true
   /usr/bin/xattr -dr com.apple.quarantine "$app_target" >/dev/null 2>&1 || true
   ok "$APP_NAME instalado em $dest"
+  reabrir_app
 
   printf '\n\033[1;32mTSA instalado.\033[0m\n'
   printf 'Abra pelo Launchpad ou Aplicativos. Na primeira vez, se aparecer "editor desconhecido":\n'
@@ -1196,6 +1296,48 @@ ensure_postgres(){
   esac
 }
 
+# Conferencia final do DNA (decisao do Cadu, 22/09/2026). Compara a versao do DNA embutido
+# no .app com a do DNA ativo no userData (o current.json que o app grava quando abre). Igual,
+# a troca valeu. Diferente ou ausente, vira aviso com o que fazer: nunca pendencia, porque o
+# app continua funcionando com o DNA anterior.
+dna_versao(){
+  [ -f "$1" ] || return 1
+  local v
+  v="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1)"
+  [ -n "$v" ] || return 1
+  printf '%s' "$v"
+}
+
+ensure_dna_ativo(){
+  [ "${TSA_ONLY_PREREQS:-0}" = 1 ] && return 0
+  local app emb ativo i=0
+  app="$(app_alvo || true)"
+  [ -n "$app" ] || return 0
+  emb="$(dna_versao "$app/$DNA_EMBUTIDO_REL" || true)"
+  if [ -z "$emb" ]; then
+    mark_aviso "DNA: o app instalado nao traz o DNA embutido." "chame o suporte da TSA"
+    return 0
+  fi
+  # So espera quando o app foi reaberto aqui: e ele quem grava o pacote ativo ao abrir.
+  while :; do
+    ativo="$(dna_versao "$DNA_ATIVO" || true)"
+    [ "$ativo" = "$emb" ] && break
+    [ "$APP_REABRIR" = 1 ] || break
+    [ "$i" -ge "$DNA_WAIT" ] && break
+    sleep 1
+    i=$((i + 1))
+  done
+  if [ "$ativo" = "$emb" ]; then
+    mark_ok "DNA $emb: ativo"
+  elif [ -z "$ativo" ]; then
+    mark_aviso "DNA $emb: ainda nao foi aplicado; este Mac nao tem DNA ativo." \
+      "abra o TSA; se ele ja estava aberto, $DNA_REABRIR"
+  else
+    mark_aviso "DNA $emb: ainda nao foi aplicado; o ativo continua sendo o $ativo." "$DNA_REABRIR"
+  fi
+  return 0
+}
+
 # Passo guiado das permissoes (decisao do Cadu, 21/09/2026). Roda depois do resumo, so com
 # o Handy no lugar e com terminal. Abre as duas telas, ensina os tres passos e espera o
 # Enter com tempo limite. Sem terminal, so deixa o texto: nunca trava a instalacao.
@@ -1259,6 +1401,8 @@ prepare_simulator(){
   ensure_handy || true
   ensure_voicestudio || true
   ensure_editor_video || true
+  # Por ultimo: da mais tempo para o app reaberto gravar o DNA ativo.
+  ensure_dna_ativo || true
 
   printf '\n\033[1mSimulador ACE e ACE Audiovisual: requisitos do Mac\033[0m\n'
   printf '%s' "$READY$PENDING$AVISOS"
