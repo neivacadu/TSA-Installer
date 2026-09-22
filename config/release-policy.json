@@ -4,12 +4,28 @@
   "appRepository": "aifocusdev/AceOrca",
   "appRef": "tsa/integracao",
   "dnaRepository": "neivacadu/DNA-ACE-TSA",
-  "dnaApprovedCommit": "8fa8b68e99d56242a7c8079a22e17309adf14d38",
-  "dnaReleaseVersion": "1.0.13-approved.20260919",
+  "dnaApprovedCommit": "7810a8840dd9b3a74979ff36607658753be95396",
+  "dnaReleaseVersion": "1.0.14",
   "dnaManifestUrl": "https://ace.acetsia.com/inteligencia/v1/dna/release",
   "appId": "com.trafegosa.orca-tsa",
-  "channels": ["adhoc", "rc", "stable"],
+  "channels": [
+    "adhoc",
+    "rc",
+    "stable"
+  ],
   "publishDefault": "draft",
-  "windows": { "firstTarget": "nsis", "architecture": "x64" },
-  "macos": { "firstTargets": ["dmg", "zip"], "architectures": ["arm64", "x64"] }
+  "windows": {
+    "firstTarget": "nsis",
+    "architecture": "x64"
+  },
+  "macos": {
+    "firstTargets": [
+      "dmg",
+      "zip"
+    ],
+    "architectures": [
+      "arm64",
+      "x64"
+    ]
+  }
 }
