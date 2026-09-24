@@ -24,6 +24,7 @@ Você não precisa de conta no GitHub nem do `gh`. O instalador faz duas coisas.
    - `yt-dlp`, para baixar vídeo de rede social;
    - `whisper-cli` (fórmula `whisper-cpp`), que transcreve o áudio;
    - o modelo `ggml-large-v3-turbo.bin` em `~/.cache/whisper`, de 1,6 GB;
+   - o modelo `ggml-silero-v5.1.2.bin` em `~/.cache/whisper`, de 885 KB: o detector de voz Silero do `tsa-editor fala-limpa`. Ele baixa sempre que falta, também na conferência, e só entra com o sha256 certo; sha256 errado apaga o arquivo e vira pendência. O comando `whisper-vad-speech-segments` já vem na fórmula `whisper-cpp`;
    - o Handy, app de ditado por microfone com histórico local;
    - o VoiceStudio, app de clonagem de voz e dublagem local.
 

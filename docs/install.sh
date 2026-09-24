@@ -54,6 +54,11 @@ WHISPER_MODEL="ggml-large-v3-turbo.bin"
 WHISPER_MODEL_URL="${TSA_WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$WHISPER_MODEL}"
 WHISPER_MODEL_BYTES="${TSA_WHISPER_MODEL_BYTES:-1624555275}"   # 1,6 GB
 MODELO_CMD="curl -fsSL $INSTALL_URL | TSA_ONLY_PREREQS=1 TSA_BAIXAR_MODELO=1 bash"
+# Detector de voz Silero do tsa-editor fala-limpa (decisao do Cadu, 24/09/2026, DEC-AV-04).
+# Fica na mesma pasta do modelo do whisper, onde o tsa-editor procura primeiro.
+SILERO_MODEL="ggml-silero-v5.1.2.bin"
+SILERO_URL="${TSA_SILERO_URL:-https://huggingface.co/ggml-org/whisper-vad/resolve/main/$SILERO_MODEL}"
+SILERO_SHA256="${TSA_SILERO_SHA256:-29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf}"
 # ---- Permissoes que a Apple nao deixa o instalador conceder (decisao do Cadu, 21/09/2026)
 # O TCC do macOS so aceita Microfone e Acessibilidade pelo clique da pessoa, e nenhum
 # script le esse banco. Entao o instalador abre as telas, ensina e espera o Enter — e
@@ -1025,6 +1030,41 @@ ensure_whisper_model(){
   fi
 }
 
+# Silero: 885 KB, entao baixa sempre que falta, inclusive na conferencia. Baixa para
+# arquivo temporario e so entra no nome final com o sha256 certo; sha errado apaga e avisa.
+sha256_de(){ shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
+
+ensure_silero_model(){
+  local destino="$WHISPER_DIR/$SILERO_MODEL" tmp="$WHISPER_DIR/$SILERO_MODEL.baixando" atual
+  local fix="rode de novo: $REPAIR_CMD"
+  if [ -f "$destino" ]; then
+    atual="$(sha256_de "$destino")"
+    if [ "$atual" = "$SILERO_SHA256" ]; then
+      mark_ok "Modelo $SILERO_MODEL (fala limpa): ja estava pronto ($WHISPER_DIR)"
+      return 0
+    fi
+    warn "O modelo em $destino tem sha256 ${atual:-ilegivel} e o certo e $SILERO_SHA256. Vou baixar de novo."
+    rm -f "$destino"
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    mark_fail "Modelo $SILERO_MODEL (fala limpa): falta em $WHISPER_DIR e nao ha curl para baixar." "$fix"
+    return 1
+  fi
+  if ! mkdir -p "$WHISPER_DIR" || ! curl -fsSL "$SILERO_URL" -o "$tmp" </dev/null; then
+    rm -f "$tmp"
+    mark_fail "Modelo $SILERO_MODEL (fala limpa): o download falhou." "$fix"
+    return 1
+  fi
+  atual="$(sha256_de "$tmp")"
+  if [ "$atual" != "$SILERO_SHA256" ]; then
+    rm -f "$tmp"
+    mark_fail "Modelo $SILERO_MODEL (fala limpa): o sha256 do arquivo baixado (${atual:-nao calculado}) nao bateu; apaguei e nao instalei." "$fix"
+    return 1
+  fi
+  mv "$tmp" "$destino"
+  mark_ok "Modelo $SILERO_MODEL (fala limpa): baixado e sha256 conferido ($WHISPER_DIR)"
+}
+
 # Pre-configuracao do Handy (decisao do Cadu, 21/09/2026). O que travou a instalacao do
 # time foi a configuracao manual. Este padrao e o mesmo arquivo que roda no Mac do Cadu:
 # portugues, atalho option+espaco, modelo large-v3-turbo, sem chave de API e sem dado de
@@ -1398,6 +1438,7 @@ prepare_simulator(){
   ensure_ytdlp || true
   ensure_whisper || true
   ensure_whisper_model || true
+  ensure_silero_model || true
   ensure_handy || true
   ensure_voicestudio || true
   ensure_editor_video || true

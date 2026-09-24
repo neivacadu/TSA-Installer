@@ -27,6 +27,8 @@ done
 VS_SHA="$(head -c 2048 /dev/zero | shasum -a 256 | awk '{print $1}')"
 # sha256 real dos 4096 bytes que o curl falso grava como DMG do TSA
 TSA_SHA="$(head -c 4096 /dev/zero | shasum -a 256 | awk '{print $1}')"
+# sha256 real dos 1024 bytes que o curl falso grava como modelo Silero
+SIL_SHA="$(head -c 1024 /dev/zero | shasum -a 256 | awk '{print $1}')"
 
 # porta livre para os cenarios normais; a porta real 5432 desta maquina fica fora do teste
 free_port(){
@@ -165,6 +167,12 @@ case "$*" in
     [ -n "$out" ] || exit 0
     head -c "${FAKE_MODEL_WRITE:-4096}" /dev/zero >"$out"
     ;;
+  *ggml-silero*)
+    prev=""; out=""
+    for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+    [ -n "$out" ] || exit 0
+    head -c "${FAKE_SILERO_WRITE:-1024}" /dev/zero >"$out"
+    ;;
   *)
     prev=""; out=""
     for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
@@ -244,7 +252,13 @@ setup(){
       modelo|modelo_errado)
         mkdir -p "$S/home/.cache/whisper"
         head -c "$([ "$b" = modelo ] && echo 4096 || echo 99)" /dev/zero \
-          >"$S/home/.cache/whisper/ggml-large-v3-turbo.bin" ;;
+          >"$S/home/.cache/whisper/ggml-large-v3-turbo.bin"
+        # a esteira pronta inclui o Silero da fala limpa, com o sha256 certo
+        [ "$b" = modelo ] && head -c 1024 /dev/zero >"$S/home/.cache/whisper/ggml-silero-v5.1.2.bin" ;;
+      silero|silero_errado)
+        mkdir -p "$S/home/.cache/whisper"
+        head -c "$([ "$b" = silero ] && echo 1024 || echo 99)" /dev/zero \
+          >"$S/home/.cache/whisper/ggml-silero-v5.1.2.bin" ;;
       psql_cellar)
         mkdir -p "$S/prefix/Cellar/postgresql@16/16.4/bin"
         cp "$TPL/psql" "$TPL/pg_isready" "$S/prefix/Cellar/postgresql@16/16.4/bin/"
@@ -271,7 +285,7 @@ run(){
     FAKE_LOG="$S/log" FAKE_STATE="$S/state" FAKE_TPL="$TPL" FAKE_HANDY_APP="$S/Applications/Handy.app" \
     TSA_ONLY_PREREQS=1 TSA_TTY=/nonexistent/tty TSA_BREW_CANDIDATES="$cand" TSA_PG_WAIT=3 \
     TSA_PG_PORT="$PORT_FREE" TSA_POSTGRES_APP="$S/Postgres.app" TSA_SYS_PYTHON=/nonexistent/python3 \
-    TSA_HANDY_APP="$S/Applications/Handy.app" TSA_WHISPER_MODEL_BYTES=4096 \
+    TSA_HANDY_APP="$S/Applications/Handy.app" TSA_WHISPER_MODEL_BYTES=4096 TSA_SILERO_SHA256="$SIL_SHA" \
     FAKE_VS_VOLUME="$S/volume" TSA_VS_APP="$S/Applications/VoiceStudio.app" \
     TSA_VS_BASE_URL="https://exemplo.invalido/voicestudio" TSA_VS_SHA256="$VS_SHA" \
     TSA_EDITOR_PY_ROOTS="$S/prefix/opt" TSA_AGY_SECURITY="$S/userbin/security" \
@@ -548,6 +562,42 @@ check "nao renomeia o parcial" '[ ! -e "$S/home/.cache/whisper/ggml-large-v3-tur
 check "guarda o pedaco baixado" '[ -e "$S/home/.cache/whisper/ggml-large-v3-turbo.bin.parcial" ]'
 check "avisa o download incompleto" 'out_has "Download incompleto: 10 de 4096 bytes"'
 check "diz que retoma de onde parou" 'out_has "retoma de onde parou"'
+
+echo "27b. Silero ja pronto com o sha256 certo: nao baixa"
+setup silerook brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl modelo handy pillow voicestudio auto-editor capcut-cli
+run2
+check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
+check "nao baixa o Silero" '! grep -q "ggml-silero" "$S/log1" "$S/log"'
+check "resumo: Silero pronto" 'out_has "Modelo ggml-silero-v5.1.2.bin (fala limpa): ja estava pronto"'
+
+echo "27c. Silero ausente: baixa, confere o sha256 e nao baixa de novo"
+setup silerobaixa brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy pillow voicestudio auto-editor capcut-cli
+mkdir -p "$S/home/.cache/whisper"; head -c 4096 /dev/zero >"$S/home/.cache/whisper/ggml-large-v3-turbo.bin"
+run2
+check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
+check "1a: baixa para arquivo temporario" 'grep -q "ggml-silero-v5.1.2.bin -o .*ggml-silero-v5.1.2.bin.baixando" "$S/log1"'
+check "1a: modelo no lugar e sem temporario" \
+  '[ "$(shasum -a 256 "$S/home/.cache/whisper/ggml-silero-v5.1.2.bin" | awk "{print \$1}")" = "$SIL_SHA" ] &&
+   [ ! -e "$S/home/.cache/whisper/ggml-silero-v5.1.2.bin.baixando" ]'
+check "1a: resumo diz baixado e conferido" 'grep -q "ggml-silero-v5.1.2.bin (fala limpa): baixado e sha256 conferido" "$S/out1"'
+check "2a: nao baixa de novo" '! grep -q "ggml-silero" "$S/log"'
+
+echo "27d. Silero baixado com sha256 errado: nao instala e avisa"
+setup silerosha brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl handy pillow voicestudio auto-editor capcut-cli
+mkdir -p "$S/home/.cache/whisper"; head -c 4096 /dev/zero >"$S/home/.cache/whisper/ggml-large-v3-turbo.bin"
+run FAKE_SILERO_WRITE=10
+check "sai 1 sem travar o resto" '[ $RC = 1 ] && out_has "Handy (ditado por microfone)"'
+check "nao instala nem deixa temporario" \
+  '[ ! -e "$S/home/.cache/whisper/ggml-silero-v5.1.2.bin" ] && [ ! -e "$S/home/.cache/whisper/ggml-silero-v5.1.2.bin.baixando" ]'
+check "avisa o sha256 errado" 'out_has "ggml-silero-v5.1.2.bin (fala limpa): o sha256 do arquivo baixado" && out_has "apaguei e nao instalei"'
+
+echo "27e. Silero existente com sha256 errado: troca pelo certo"
+setup silerotorto brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli curl silero_errado handy pillow voicestudio auto-editor capcut-cli
+head -c 4096 /dev/zero >"$S/home/.cache/whisper/ggml-large-v3-turbo.bin"
+run
+check "sai 0 e avisa o sha256 errado" '[ $RC = 0 ] && out_has "e o certo e $SIL_SHA"'
+check "fica com o sha256 certo" \
+  '[ "$(shasum -a 256 "$S/home/.cache/whisper/ggml-silero-v5.1.2.bin" | awk "{print \$1}")" = "$SIL_SHA" ]'
 
 echo "28. sem Handy, duas execucoes"
 setup nohandy brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo pillow voicestudio auto-editor capcut-cli
