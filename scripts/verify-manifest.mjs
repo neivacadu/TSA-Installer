@@ -13,7 +13,7 @@ if (manifest.dna?.source_repository !== `https://github.com/${policy.dnaReposito
 if (manifest.dna?.approved_commit !== policy.dnaApprovedCommit) errors.push('dna.approved_commit')
 if (manifest.dna?.release_version !== policy.dnaReleaseVersion) errors.push('dna.release_version')
 if (manifest.dna?.manifest_url !== policy.dnaManifestUrl) errors.push('dna.manifest_url')
-if (JSON.stringify(manifest.dna?.compatible_adapters ?? []) !== JSON.stringify(['tsa-codex-1', 'tsa-claude-1'])) errors.push('dna.compatible_adapters')
+if (JSON.stringify(manifest.dna?.compatible_adapters ?? []) !== JSON.stringify(['tsa-codex-1', 'tsa-claude-1', 'tsa-antigravity-1'])) errors.push('dna.compatible_adapters')
 if (manifest.state === 'PUBLISHED' && (!Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0)) errors.push('published artifacts')
 if (errors.length) { console.error(`Invalid TSA release manifest: ${errors.join(', ')}`); process.exit(1) }
 console.log(`TSA manifest valid: ${manifestPath}`)
