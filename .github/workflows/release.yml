@@ -51,8 +51,11 @@ jobs:
         working-directory: app
       - run: pnpm run verify:tsa-macos-release
         working-directory: app
+      # Grava tsa-version.json com canal aprovada (WO-10): sem isto o publicar-release recusa o DMG.
       - run: TSA_ADHOC_SIGN=1 pnpm run build:mac
         working-directory: app
+        env:
+          TSA_RELEASE_VERSION: ${{ inputs.version }}
       - run: pnpm run prepare:tsa-macos-release
         working-directory: app
         env:
