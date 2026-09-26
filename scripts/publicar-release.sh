@@ -18,7 +18,8 @@ PAGES_TIMEOUT="${TSA_PAGES_TIMEOUT:-900}"
 # Decisao do Cadu (25/09/2026): o TSA para Mac e so chip Apple. Mac Intel (x64) saiu de tudo.
 ARCHS="arm64"
 # Recursos que todo TSA.app precisa ter em Contents/Resources/tsa. Edite so aqui.
-RECURSOS_OBRIGATORIOS="simulador gsd dna-embedded-release.json"
+# tsa-version.json, app-trusted-keys.json e atualizador (leitor estrito do app): WO-10.
+RECURSOS_OBRIGATORIOS="simulador gsd dna-embedded-release.json tsa-version.json app-trusted-keys.json atualizador"
 # Conferidos so quando existem: outras frentes ainda estao acrescentando.
 RECURSOS_OPCIONAIS="ace-skills ace-knowledge"
 
@@ -49,6 +50,169 @@ note(){ printf '  \033[0;33m!\033[0m %s\n' "$1"; }
 faria(){ printf '  [ensaio] faria: %s\n' "$1"; }
 die(){ printf '\n\033[0;31m✗ %s\033[0m\n' "$1" >&2; exit 1; }
 
+# Versao TSA dentro do app (WO-10; APP-RELEASE-CONTRATO v1.2, secoes 3 e 10). Vale ate a F5,
+# enquanto a release sai pelo GitHub. O build:mac recebe TSA_RELEASE_VERSION e grava
+# Contents/Resources/tsa/tsa-version.json com canal "aprovada". Sem isso, a regra de troca
+# (secao 10) leria a release como 0.0.0 ou como a build local de quem gerou o DMG.
+# Falha fechada: arquivo ausente, JSON invalido ou qualquer campo fora recusa a release.
+# Os dois arquivos sao lidos com o leitor JSON estrito do proprio app (atualizador/manifesto.mjs
+# de dentro do DMG): o que o app instalado recusaria, a publicacao recusa antes (WO10-CX-03).
+confere_versao_tsa(){ # pasta Resources/tsa, versao da release, commit completo do app, rotulo
+  local saida
+  saida="$(node --input-type=module -e '
+    import fs from "node:fs"
+    import { pathToFileURL } from "node:url"
+    const [res, versao, commit] = process.argv.slice(1)
+    const arq = res + "/tsa-version.json"
+    const falha = (m) => { console.log(m); process.exit(1) }
+    let app
+    try { app = await import(pathToFileURL(res + "/atualizador/manifesto.mjs").href) } catch { falha("nao consegui carregar atualizador/manifesto.mjs do app") }
+    if (typeof app.lerJsonEstrito !== "function" || typeof app.lerInstalado !== "function") falha("atualizador/manifesto.mjs sem lerJsonEstrito/lerInstalado")
+    let st
+    try { st = fs.lstatSync(arq) } catch { falha("falta tsa-version.json (o build:mac rodou sem TSA_RELEASE_VERSION?)") }
+    if (!st.isFile()) falha("tsa-version.json nao e um arquivo comum")
+    let v
+    try { v = app.lerJsonEstrito(fs.readFileSync(arq)) } catch { falha("tsa-version.json nao e JSON estrito valido (o app nao leria)") }
+    if (!v || typeof v !== "object" || Array.isArray(v)) falha("tsa-version.json nao e um objeto")
+    if (v.tsa !== versao) falha("tsa-version.json diz tsa " + JSON.stringify(v.tsa) + "; a release e " + versao)
+    if (v.canal !== "aprovada") falha("tsa-version.json tem canal " + JSON.stringify(v.canal) + "; a release exige \"aprovada\"")
+    const id = v.build_id
+    if (typeof id !== "string" || !/^[0-9a-f]{7,12}\.[0-9]{8}T[0-9]{6}Z$/.test(id)) falha("build_id ausente ou fora do formato: " + JSON.stringify(id))
+    if (typeof v.commit !== "string" || !/^[0-9a-f]{7,12}$/.test(v.commit)) falha("commit invalido no tsa-version.json: " + JSON.stringify(v.commit))
+    if (!commit.startsWith(v.commit)) falha("o app do DMG e do commit " + v.commit + ", nao de " + commit.slice(0, 9) + " (dist/ antigo?)")
+    // gerado_em sai de toISOString() no gerador. Exigir a mesma forma exata barra data que o
+    // Date normalizaria (2026-02-30 virando 03-02) e fecha a checagem de calendario da secao 3.
+    const g = v.gerado_em
+    const d = new Date(typeof g === "string" && /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/.test(g) ? g : NaN)
+    if (Number.isNaN(d.getTime()) || d.toISOString() !== g) falha("gerado_em invalido: " + JSON.stringify(g))
+    const carimbo = d.toISOString().slice(0, 19).replace(/[-:]/g, "") + "Z"
+    if (id !== v.commit + "." + carimbo) falha("build_id " + id + " nao bate com commit + gerado_em (" + v.commit + "." + carimbo + ")")
+    // A regra de troca (secao 10) le o arquivo pelo lerInstalado: ele tem de ver o mesmo.
+    const inst = app.lerInstalado(arq)
+    if (inst.build_id !== id || inst.versao_rotulo !== versao) falha("o lerInstalado do app nao le a versao e o build_id deste arquivo")
+    console.log(v.tsa + " (" + v.canal + ") " + id)
+  ' -- "$1" "$2" "$3")" || die "${4:-app}: ${saida:-falha ao ler tsa-version.json}"
+  ok "  versao TSA: $saida"
+}
+
+# Chaves que o app confia para aceitar uma atualizacao (contrato, secao 2.2, item 6):
+# objeto { key_id: PEM SPKI Ed25519 }, com a chave real da F1. As regras sao as mesmas do
+# verificador do app (tsa-app resources/tsa/atualizador/manifesto.mjs, chaveConfiavel): uma
+# entrada irregular faz o app reprovar o arquivo inteiro, entao aqui ela recusa a release.
+# atalho: regras copiadas, nao importadas, porque o chaveConfiavel nao e exportado. Teto: se o
+# app mudar RE_KEY_ID ou o PEM aceito, mudar aqui junto. Saida: o app exportar a validacao.
+APP_KEY_ID="tsa-cadu-app-release-v1"
+confere_chaves_app(){ # pasta Resources/tsa, rotulo
+  local saida
+  saida="$(node --input-type=module -e '
+    import fs from "node:fs"
+    import crypto from "node:crypto"
+    import { pathToFileURL } from "node:url"
+    const [res, exigida] = process.argv.slice(1)
+    const arq = res + "/app-trusted-keys.json"
+    const falha = (m) => { console.log(m); process.exit(1) }
+    let app
+    try { app = await import(pathToFileURL(res + "/atualizador/manifesto.mjs").href) } catch { falha("nao consegui carregar atualizador/manifesto.mjs do app") }
+    if (typeof app.lerJsonEstrito !== "function") falha("atualizador/manifesto.mjs sem lerJsonEstrito")
+    let st
+    try { st = fs.lstatSync(arq) } catch { falha("falta app-trusted-keys.json") }
+    if (!st.isFile()) falha("app-trusted-keys.json nao e um arquivo comum")
+    let k
+    try { k = app.lerJsonEstrito(fs.readFileSync(arq)) } catch { falha("app-trusted-keys.json nao e JSON estrito valido (o app nao leria)") }
+    if (!k || typeof k !== "object" || Array.isArray(k) || Object.getPrototypeOf(k) !== Object.prototype) falha("app-trusted-keys.json nao e um objeto { key_id: PEM }")
+    const ids = Object.keys(k)
+    if (!ids.includes(exigida)) falha("app-trusted-keys.json sem a chave " + exigida)
+    const prefixo = Buffer.from("302a300506032b6570032100", "hex")
+    for (const id of ids) {
+      if (!/^[a-z0-9][a-z0-9-]{2,62}$/.test(id)) falha("key_id fora do formato: " + JSON.stringify(id))
+      const pem = k[id]
+      const r = typeof pem === "string" && /^-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/]{59}=)\n-----END PUBLIC KEY-----\n$/.exec(pem)
+      if (!r) falha("chave " + JSON.stringify(id) + " nao e um PEM Ed25519 exato (uma chave, com quebra de linha no fim)")
+      const der = Buffer.from(r[1], "base64")
+      if (der.length !== 44 || der.toString("base64") !== r[1] || !der.subarray(0, 12).equals(prefixo)) falha("chave " + JSON.stringify(id) + " nao e SPKI Ed25519")
+      let tipo
+      try { tipo = crypto.createPublicKey({ key: der, format: "der", type: "spki" }).asymmetricKeyType } catch { falha("chave " + JSON.stringify(id) + " nao abre como chave publica") }
+      if (tipo !== "ed25519") falha("chave " + JSON.stringify(id) + " nao e ed25519")
+    }
+    console.log(ids.join(", "))
+  ' -- "$1" "$APP_KEY_ID")" || die "${2:-app}: ${saida:-falha ao ler app-trusted-keys.json}"
+  ok "  chaves de atualizacao: $saida"
+}
+
+confere_app(){ # caminho do .app, arch, rotulo (padrao "DMG <arch>")
+  local app="$1" arch="$2" rot="${3:-DMG $2}" plist exe archs res r dna
+  plist="$app/Contents/Info.plist"
+  codesign --verify --deep --strict "$app" 2>&1 || die "codesign falhou em $app"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$plist")" = "$APP_ID" ] || die "bundle id errado em $app"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$plist")" = "$APP_VERSAO" ] ||
+    die "o app do $rot nao e da versao $APP_VERSAO"
+  exe="$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$plist")"
+  archs="$(lipo -archs "$app/Contents/MacOS/$exe")"
+  case "$arch:$archs" in
+    arm64:arm64) ;;
+    *) die "o $rot traz binario $archs" ;;
+  esac
+  res="$app/Contents/Resources/tsa"
+  [ -d "$res" ] || die "falta Contents/Resources/tsa no $rot"
+  for r in $RECURSOS_OBRIGATORIOS; do
+    [ -e "$res/$r" ] || die "falta Resources/tsa/$r no $rot"
+    [ ! -d "$res/$r" ] || [ -n "$(ls -A "$res/$r")" ] || die "Resources/tsa/$r esta vazio no $rot"
+  done
+  for r in $RECURSOS_OPCIONAIS; do
+    if [ -e "$res/$r" ]; then
+      [ -d "$res/$r" ] && [ -n "$(ls -A "$res/$r")" ] || die "Resources/tsa/$r existe mas esta vazio no $rot"
+      ok "  opcional presente: $r"
+    else
+      note "  opcional ausente: $r"
+    fi
+  done
+  confere_versao_tsa "$res" "$VERSAO" "$APP_COMMIT" "$rot"
+  confere_chaves_app "$res" "$rot"
+  # o caminho vai por argumento, nunca dentro do codigo JS: aspas no caminho nao quebram nada
+  dna="$(node -e 'const m=require(process.argv[1]).manifest; console.log(m.version+" "+m.id)' -- "$res/dna-embedded-release.json")" ||
+    die "nao consegui ler o dna-embedded-release.json do $rot"
+  [ "$dna" = "$POLICY_DNA_VERSAO dna-ace-tsa-$POLICY_DNA_COMMIT" ] ||
+    die "DNA embutido ($dna) difere do config/release-policy.json ($POLICY_DNA_VERSAO $POLICY_DNA_COMMIT)"
+  ok "TSA.app $arch: codesign ok, $APP_ID $APP_VERSAO, binario $archs, recursos ok, versao TSA $VERSAO aprovada, DNA $POLICY_DNA_VERSAO"
+}
+
+# O zip leva o mesmo app que o DMG (WO10-CX-04 a 08). A listagem so serve para recusar o que o
+# extrator resolveria de forma ambigua: nome repetido (tambem so por caixa), caminho nao
+# canonico (//, ./, ../, barra no inicio, barra invertida) e mais de uma raiz. Depois o zip e
+# extraido com ditto e o app extraido passa pelo mesmo confere_app do DMG, com os arquivos
+# conferidos iguais byte a byte aos do DMG. Assim vale o que de fato sai do zip no disco.
+ZIP_IGUAL_AO_DMG="tsa-version.json app-trusted-keys.json atualizador/manifesto.mjs dna-embedded-release.json"
+confere_zip(){ # caminho do zip, pasta Resources/tsa do DMG ja conferido (montado), arch, pasta de trabalho
+  local zip="$1" ref="$2" arch="$3" dir="$4" nomes raiz f
+  nomes="$(unzip -Z1 "$zip")" || die "nao consegui listar o zip $arch"
+  [ -n "$nomes" ] || die "o zip $arch esta vazio"
+  # here-string, sem pipe no primeiro comando: grep -q ou awk saindo cedo nao gera SIGPIPE
+  [ -z "$(tr '[:upper:]' '[:lower:]' <<<"$nomes" | sort | uniq -d)" ] ||
+    die "o zip $arch tem entradas com nome repetido (sem contar maiusculas)"
+  awk '{ n = split($0, c, "/")
+         for (i = 1; i <= n; i++) if ((c[i] == "" && i != n) || c[i] == "." || c[i] == "..") ruim = 1
+         if (index($0, "\\")) ruim = 1 }
+       END { exit ruim }' <<<"$nomes" || die "o zip $arch tem caminho nao canonico"
+  raiz="$(cut -d/ -f1 <<<"$nomes" | sort -u)"
+  [ "$(grep -c . <<<"$raiz")" = 1 ] && [ "${raiz%.app}" != "$raiz" ] ||
+    die "o zip $arch nao tem exatamente um .app na raiz, e nada fora dele"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  ditto -x -k "$zip" "$dir" || die "nao consegui extrair o zip $arch"
+  [ "$(find "$dir" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1 ] && [ -d "$dir/$raiz" ] ||
+    die "o zip $arch extraido nao deu um unico $raiz"
+  confere_app "$dir/$raiz" "$arch" "zip $arch"
+  for f in $ZIP_IGUAL_AO_DMG; do
+    cmp -s "$dir/$raiz/Contents/Resources/tsa/$f" "$ref/$f" ||
+      die "Resources/tsa/$f do zip $arch difere do DMG conferido"
+  done
+  rm -rf "$dir"
+  ok "zip $arch: app extraido conferido; versao, chaves, leitor e DNA iguais ao DMG"
+}
+
+# O teste (scripts/test-publicar-release.sh) carrega so as funcoes acima, sem gh, build nem rede.
+if [ "${TSA_PUBLICAR_SO_FUNCOES:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
+
 echo "$VERSAO" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' ||
   die "uso: scripts/publicar-release.sh <versao, ex.: 0.3.0> --app <clone do AceOrca> [--sem-build] [--publicar]"
 [ -n "$APP" ] || die "informe o clone do app com --app <caminho>"
@@ -66,7 +230,7 @@ printf 'Versao %s, tag %s\nModo: %s\nApp: %s\nArtefatos: %s\n' "$VERSAO" "$TAG" 
 
 # ------------------------------------------------------------------ a. pre-checagem
 say "a. Pre-checagem"
-for c in gh git node pnpm shasum openssl hdiutil codesign lipo unzip curl; do
+for c in gh git node pnpm shasum openssl hdiutil codesign lipo unzip ditto curl; do
   command -v "$c" >/dev/null || die "comando ausente: $c"
 done
 gh auth status >/dev/null 2>&1 || die "gh nao esta logado. Rode: gh auth login"
@@ -143,6 +307,7 @@ if [ "$SEM_BUILD" = 1 ]; then
   # normalize dele pega o primeiro zip em ordem alfabetica, e um dist/ com builds
   # antigos faria ele copiar o zip errado. A escolha abaixo usa o latest-mac.yml.
   note "--sem-build: reaproveitando $DIST sem build e sem prepare:tsa-macos-release"
+  note "o dist/ precisa ter saido de: TSA_RELEASE_VERSION=$VERSAO pnpm run build:mac (senao a conferencia recusa)"
 else
   # O normalize do app escolhe o primeiro arquivo que casa; limpa as saidas antigas antes.
   rm -rf "$DIST"/mac "$DIST"/mac-arm64 "$DIST"/tsa-release
@@ -153,7 +318,8 @@ else
     # mais x64. O build:mobile-web (dentro do build:desktop) precisa das dependencias do mobile/.
     pnpm run install:release
     (cd mobile && pnpm install --frozen-lockfile)
-    TSA_ADHOC_SIGN=1 pnpm run build:mac
+    # TSA_RELEASE_VERSION faz o build:mac gravar tsa-version.json com canal "aprovada" (WO-10).
+    TSA_ADHOC_SIGN=1 TSA_RELEASE_VERSION="$VERSAO" pnpm run build:mac
     TSA_RELEASE_VERSION="$VERSAO" TSA_SOURCE_COMMIT="$APP_COMMIT" pnpm run prepare:tsa-macos-release
   )
   ok "build e prepare concluidos"
@@ -198,39 +364,6 @@ for arch in $ARCHS; do
   done
 done
 
-confere_app(){ # caminho do .app, arch
-  local app="$1" arch="$2" plist exe archs res r dna
-  plist="$app/Contents/Info.plist"
-  codesign --verify --deep --strict "$app" 2>&1 || die "codesign falhou em $app"
-  [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$plist")" = "$APP_ID" ] || die "bundle id errado em $app"
-  [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$plist")" = "$APP_VERSAO" ] ||
-    die "o app do DMG $arch nao e da versao $APP_VERSAO"
-  exe="$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$plist")"
-  archs="$(lipo -archs "$app/Contents/MacOS/$exe")"
-  case "$arch:$archs" in
-    arm64:arm64) ;;
-    *) die "o DMG $arch traz binario $archs" ;;
-  esac
-  res="$app/Contents/Resources/tsa"
-  [ -d "$res" ] || die "falta Contents/Resources/tsa no DMG $arch"
-  for r in $RECURSOS_OBRIGATORIOS; do
-    [ -e "$res/$r" ] || die "falta Resources/tsa/$r no DMG $arch"
-    [ ! -d "$res/$r" ] || [ -n "$(ls -A "$res/$r")" ] || die "Resources/tsa/$r esta vazio no DMG $arch"
-  done
-  for r in $RECURSOS_OPCIONAIS; do
-    if [ -e "$res/$r" ]; then
-      [ -d "$res/$r" ] && [ -n "$(ls -A "$res/$r")" ] || die "Resources/tsa/$r existe mas esta vazio no DMG $arch"
-      ok "  opcional presente: $r"
-    else
-      note "  opcional ausente: $r"
-    fi
-  done
-  dna="$(node -p "const m=require('$res/dna-embedded-release.json').manifest; m.version+' '+m.id")"
-  [ "$dna" = "$POLICY_DNA_VERSAO dna-ace-tsa-$POLICY_DNA_COMMIT" ] ||
-    die "DNA embutido ($dna) difere do config/release-policy.json ($POLICY_DNA_VERSAO $POLICY_DNA_COMMIT)"
-  ok "TSA.app $arch: codesign ok, $APP_ID $APP_VERSAO, binario $archs, recursos ok, DNA $POLICY_DNA_VERSAO"
-}
-
 for arch in $ARCHS; do
   MOUNT="$OUT/mnt-$arch"
   mkdir -p "$MOUNT"
@@ -239,14 +372,10 @@ for arch in $ARCHS; do
   a="$(find "$MOUNT" -maxdepth 1 -name '*.app' | head -1)"
   [ -n "$a" ] || die "nenhum .app no DMG $arch"
   confere_app "$a" "$arch"
+  # com o DMG ainda montado: o zip e comparado com os arquivos que acabaram de ser conferidos
+  confere_zip "$OUT/tsa-macos-$arch.zip" "$a/Contents/Resources/tsa" "$arch" "$OUT/zip-$arch"
   detach
   rmdir "$OUT/mnt-$arch"
-
-  lista="$(unzip -l "$OUT/tsa-macos-$arch.zip")"
-  for r in $RECURSOS_OBRIGATORIOS; do
-    grep -q "Contents/Resources/tsa/$r" <<<"$lista" || die "falta Resources/tsa/$r no zip $arch"
-  done
-  ok "zip $arch: recursos obrigatorios presentes"
 done
 
 # ------------------------------------------------------------------ d. artefatos
