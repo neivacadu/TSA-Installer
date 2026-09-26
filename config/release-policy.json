@@ -24,8 +24,7 @@
       "zip"
     ],
     "architectures": [
-      "arm64",
-      "x64"
+      "arm64"
     ]
   }
 }

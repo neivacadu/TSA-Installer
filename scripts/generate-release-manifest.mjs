@@ -18,12 +18,13 @@ const artifacts = []
 for (const file of await walk(dist)) {
   const filename = file.split(/[\\/]/).pop()
   const info = await stat(file)
-  const isMac = /^tsa-macos-(arm64|x64|universal)\.(dmg|zip)$/.test(filename)
+  // Decisao do Cadu (25/09/2026): o TSA para Mac e so chip Apple; x64 e universal nao entram.
+  const isMac = /^tsa-macos-arm64\.(dmg|zip)$/.test(filename)
   const isWindows = /^tsa-windows-x64\.exe$/.test(filename) || /^TSA.*setup.*\.exe$/i.test(filename)
   if (!isMac && !isWindows) continue
   const bytes = await readFile(file)
   const platform = isMac ? 'darwin' : 'win32'
-  const architecture = isMac ? filename.match(/^tsa-macos-(arm64|x64|universal)/)[1] : 'x64'
+  const architecture = isMac ? 'arm64' : 'x64'
   const kind = isMac ? filename.endsWith('.dmg') ? 'dmg' : 'zip' : 'nsis'
   artifacts.push({ platform, architecture, kind, filename, url: `https://github.com/neivacadu/TSA-Installer/releases/download/${process.env.GITHUB_REF_NAME ?? 'draft'}/${filename}`, sha512: createHash('sha512').update(bytes).digest('hex'), bytes: info.size })
 }

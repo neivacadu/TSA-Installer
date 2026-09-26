@@ -14,6 +14,11 @@ if (manifest.dna?.approved_commit !== policy.dnaApprovedCommit) errors.push('dna
 if (manifest.dna?.release_version !== policy.dnaReleaseVersion) errors.push('dna.release_version')
 if (manifest.dna?.manifest_url !== policy.dnaManifestUrl) errors.push('dna.manifest_url')
 if (JSON.stringify(manifest.dna?.compatible_adapters ?? []) !== JSON.stringify(['tsa-codex-1', 'tsa-claude-1', 'tsa-antigravity-1'])) errors.push('dna.compatible_adapters')
+// Decisao do Cadu (25/09/2026): no Mac so entra a arquitetura da politica (arm64).
+const macArchs = policy.macos?.architectures ?? []
+for (const a of manifest.artifacts ?? []) {
+  if (a.platform === 'darwin' && !macArchs.includes(a.architecture)) errors.push(`darwin ${a.architecture} (${a.filename}) fora da politica`)
+}
 if (manifest.state === 'PUBLISHED' && (!Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0)) errors.push('published artifacts')
 if (errors.length) { console.error(`Invalid TSA release manifest: ${errors.join(', ')}`); process.exit(1) }
 console.log(`TSA manifest valid: ${manifestPath}`)

@@ -238,8 +238,7 @@ install_app(){
   arch="$(uname -m)"
   case "$arch" in
     arm64)  artifact="tsa-macos-arm64.dmg" ;;
-    x86_64) artifact="tsa-macos-x64.dmg" ;;
-    *) die "Arquitetura nao suportada: $arch" ;;
+    *) die "$MAC_SO_CHIP_APPLE" ;;
   esac
 
   TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tsa-install.XXXXXX")"
@@ -1465,8 +1464,12 @@ prepare_simulator(){
   return $rc
 }
 
+# Decisao do Cadu (25/09/2026): o TSA para Mac e so chip Apple. Mac Intel para aqui, sem baixar nada.
+MAC_SO_CHIP_APPLE="O TSA roda só em Mac com chip Apple (M1 ou mais novo). Mac Intel não é suportado."
+
 main(){
   [ "$(uname -s)" = "Darwin" ] || die "Este instalador e para macOS. Para Windows, use o instalador do Windows."
+  [ "$(uname -m)" = "arm64" ] || die "$MAC_SO_CHIP_APPLE"
 
   if [ "${TSA_ONLY_PREREQS:-0}" != 1 ]; then
     install_app

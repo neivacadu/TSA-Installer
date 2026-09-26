@@ -15,7 +15,8 @@ APP_BRANCH="tsa/integracao"
 APP_ID="com.trafegosa.orca-tsa"
 PAGES_URL="https://neivacadu.github.io/TSA-Installer/install.sh"
 PAGES_TIMEOUT="${TSA_PAGES_TIMEOUT:-900}"
-ARCHS="arm64 x64"
+# Decisao do Cadu (25/09/2026): o TSA para Mac e so chip Apple. Mac Intel (x64) saiu de tudo.
+ARCHS="arm64"
 # Recursos que todo TSA.app precisa ter em Contents/Resources/tsa. Edite so aqui.
 RECURSOS_OBRIGATORIOS="simulador gsd dna-embedded-release.json"
 # Conferidos so quando existem: outras frentes ainda estao acrescentando.
@@ -148,8 +149,8 @@ else
   rm -f "$DIST"/*.dmg "$DIST"/*.zip "$DIST"/*.blockmap "$DIST"/latest-mac.yml
   (
     cd "$APP"
-    # O build:mac empacota arm64 e x64: o beforePack exige as dependencias nativas das duas CPUs,
-    # e o build:mobile-web (dentro do build:desktop) precisa das dependencias do mobile/.
+    # O build:mac empacota so arm64 (dmg e zip): o alvo mac do electron-builder do app nao tem
+    # mais x64. O build:mobile-web (dentro do build:desktop) precisa das dependencias do mobile/.
     pnpm run install:release
     (cd mobile && pnpm install --frozen-lockfile)
     TSA_ADHOC_SIGN=1 pnpm run build:mac
@@ -172,11 +173,15 @@ ok "build do app: versao $APP_VERSAO"
 origem_de(){ # arch tipo
   case "$1:$2" in
     arm64:dmg) echo "orca-macos-arm64.dmg" ;;
-    x64:dmg) echo "orca-macos-x64.dmg" ;;
     arm64:zip) yml_urls | grep -- '-arm64-mac\.zip$' || true ;;
-    x64:zip) yml_urls | grep -- '-mac\.zip$' | grep -v -- '-arm64-mac\.zip$' || true ;;
   esac
 }
+
+# Um build com x64 veio de uma config antiga do app: recusa antes de copiar qualquer coisa.
+if yml_urls | grep -v -- '-arm64' | grep -q .; then
+  die "latest-mac.yml traz artefato que nao e arm64 (Mac Intel saiu da release):
+$(yml_urls | grep -v -- '-arm64' | sed 's/^/    /')"
+fi
 
 for arch in $ARCHS; do
   for tipo in dmg zip; do
@@ -203,7 +208,7 @@ confere_app(){ # caminho do .app, arch
   exe="$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$plist")"
   archs="$(lipo -archs "$app/Contents/MacOS/$exe")"
   case "$arch:$archs" in
-    arm64:*arm64*|x64:*x86_64*) ;;
+    arm64:arm64) ;;
     *) die "o DMG $arch traz binario $archs" ;;
   esac
   res="$app/Contents/Resources/tsa"
@@ -246,7 +251,7 @@ done
 
 # ------------------------------------------------------------------ d. artefatos
 say "d. Checksums e manifesto"
-(cd "$OUT" && shasum -a 256 tsa-macos-arm64.dmg tsa-macos-x64.dmg tsa-macos-arm64.zip tsa-macos-x64.zip >checksums-sha256.txt)
+(cd "$OUT" && shasum -a 256 tsa-macos-arm64.dmg tsa-macos-arm64.zip >checksums-sha256.txt)
 # mesmo awk do docs/install.sh: coluna 2 e o nome sem caminho
 for arch in $ARCHS; do
   n="tsa-macos-$arch.dmg"
@@ -265,8 +270,8 @@ sed 's/^/    /' "$OUT/checksums-sha256.txt"
 cp "$ROOT/manifests/tsa-release.json" "$OUT/tsa-release.json"
 # Why: node -p colors numbers when the build env sets FORCE_COLOR, so print plain text.
 N_ART="$(node -e "process.stdout.write(String(require('$OUT/tsa-release.json').artifacts.length))")"
-[ "$N_ART" = 4 ] || die "o manifesto tem $N_ART artefatos; esperava 4"
-ok "tsa-release.json com 4 artefatos"
+[ "$N_ART" = 2 ] || die "o manifesto tem $N_ART artefatos; esperava 2 (dmg e zip arm64)"
+ok "tsa-release.json com 2 artefatos"
 
 # ------------------------------------------------------------------ e. tag do instalador
 say "e. Tag no docs/install.sh"
@@ -280,14 +285,15 @@ else
   { diff -u "$ROOT/docs/install.sh" "$OUT/install.sh" || true; } | sed -n '3,$p' | grep '^[-+]' | sed 's/^/    /'
 fi
 
-NOTAS="Instalador TSA $VERSAO para macOS (Apple Silicon e Intel), assinatura ad-hoc.
+NOTAS="Instalador TSA $VERSAO para macOS com chip Apple (M1 ou mais novo), assinatura ad-hoc.
+Mac Intel nao e suportado.
 
 App $APP_VERSAO, commit $APP_COMMIT da branch $APP_BRANCH.
 DNA $POLICY_DNA_VERSAO embutido. Inclui o simulador ACE.
 
 Instalar:
 curl -fsSL $PAGES_URL | bash"
-ASSETS="$OUT/tsa-macos-arm64.dmg $OUT/tsa-macos-x64.dmg $OUT/tsa-macos-arm64.zip $OUT/tsa-macos-x64.zip $OUT/checksums-sha256.txt $OUT/tsa-release.json"
+ASSETS="$OUT/tsa-macos-arm64.dmg $OUT/tsa-macos-arm64.zip $OUT/checksums-sha256.txt $OUT/tsa-release.json"
 
 # ------------------------------------------------------------------ f. publicacao
 say "f. Publicacao"

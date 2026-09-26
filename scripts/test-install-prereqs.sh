@@ -94,6 +94,8 @@ fake hdiutil 'case "$1" in
     esac ;;
 esac
 exit 0'
+# Mac Intel: o uname falso responde Darwin e x86_64 (decisao do Cadu, 25/09/2026)
+fake uname-intel 'case "$1" in -m) echo x86_64 ;; *) echo Darwin ;; esac'
 fake ditto 'cp -R "$1" "$2"'
 fake xattr 'exit 0'
 # open do .app: o app de verdade volta a rodar e grava o DNA ativo ao abrir.
@@ -143,7 +145,7 @@ case "$*" in
     prev=""; out=""
     for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
     [ -n "$out" ] || exit 0
-    { echo "$FAKE_TSA_SHA  tsa-macos-arm64.dmg"; echo "$FAKE_TSA_SHA  tsa-macos-x64.dmg"; } >"$out"
+    echo "$FAKE_TSA_SHA  tsa-macos-arm64.dmg" >"$out"
     ;;
   *SHA256SUMS*)
     prev=""; out=""
@@ -240,6 +242,7 @@ setup(){
       dna_velho) mkdir -p "$S/home/Library/Application Support/TSA/dna"
         echo '{"manifest":{"version":"1.0.0"}}' >"$S/home/Library/Application Support/TSA/dna/current.json" ;;
       voicestudio) mkdir -p "$S/Applications/VoiceStudio.app" ;;
+      mac_intel) cp "$TPL/uname-intel" "$S/userbin/uname" ;;
       pillow) touch "$S/state/pillow" ;;
       py312_keg) mkdir -p "$S/prefix/opt/python@3.12/bin"
         cp "$TPL/python3.12" "$S/prefix/opt/python@3.12/bin/python3.12" ;;
@@ -1048,6 +1051,15 @@ setup dnasemapp $BASE
 run
 check "sai 0" '[ $RC = 0 ]'
 check "o resumo nao fala em DNA" '! out_has "DNA"'
+
+echo "69. Mac Intel: para com mensagem clara, sem baixar nada nem preparar o simulador"
+setup macintel $INST mac_intel
+run_install TSA_EDITOR_VIDEO=nao
+check "sai com erro e nao trava" '[ $RC != 0 ] && ! out_has TRAVOU'
+check "diz que o TSA e so chip Apple" 'out_has "O TSA roda só em Mac com chip Apple (M1 ou mais novo). Mac Intel não é suportado."'
+check "nao baixa nada" '! grep -q "^curl" "$S/log"'
+check "nao instala o app" '[ ! -d "$S/Applications/TSA.app" ]'
+check "nao prepara o simulador" '! grep -q "^brew" "$S/log"'
 
 echo "resultado: $PASS ok, $FAIL falhas"
 [ "$FAIL" = 0 ]

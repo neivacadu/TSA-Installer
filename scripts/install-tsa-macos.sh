@@ -6,8 +6,8 @@ BASE_URL="https://github.com/neivacadu/TSA-Installer/releases/download/${RELEASE
 ARCH="$(uname -m)"
 case "$ARCH" in
   arm64) ARTIFACT="tsa-macos-arm64.dmg" ;;
-  x86_64) ARTIFACT="tsa-macos-x64.dmg" ;;
-  *) echo "Arquitetura não suportada: $ARCH" >&2; exit 2 ;;
+  # Decisao do Cadu (25/09/2026): o TSA para Mac e so chip Apple.
+  *) echo "O TSA roda só em Mac com chip Apple (M1 ou mais novo). Mac Intel não é suportado." >&2; exit 2 ;;
 esac
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tsa-install.XXXXXX")"
 cleanup() { [ -n "${MOUNT:-}" ] && hdiutil detach "$MOUNT" >/dev/null 2>&1 || true; rm -rf "$TMP_DIR"; }
