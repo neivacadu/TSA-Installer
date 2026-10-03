@@ -88,6 +88,8 @@ fake hdiutil 'case "$1" in
         mkdir -p "$D"
         printf "{\"schema_version\":\"tsa.dna.release/v1\",\"manifest\":{\"version\":\"%s\"}}\n" \
           "${FAKE_TSA_DNA:-9.9.9}" >"$D/dna-embedded-release.json"
+        # toda build traz o tsa-version.json (WO-10); a troca segura confere o build_id da copia
+        printf "{\"build_id\":\"49d050c9f.20261002T135453Z\"}\n" >"$D/tsa-version.json"
         printf "/dev/disk9\tGUID_partition_scheme\t\n/dev/disk9s1\tApple_HFS\t%s\n" "$FAKE_TSA_VOLUME" ;;
       *) mkdir -p "$FAKE_VS_VOLUME/VoiceStudio.app/Contents"
         printf "/dev/disk9\tGUID_partition_scheme\t\n/dev/disk9s1\tApple_HFS\t%s\n" "$FAKE_VS_VOLUME" ;;
@@ -98,6 +100,7 @@ exit 0'
 fake uname-intel 'case "$1" in -m) echo x86_64 ;; *) echo Darwin ;; esac'
 fake ditto 'cp -R "$1" "$2"'
 fake xattr 'exit 0'
+fake codesign 'exit 0'
 # open do .app: o app de verdade volta a rodar e grava o DNA ativo ao abrir.
 fake open '
 case "$1" in
@@ -1003,7 +1006,8 @@ run_install(){
     TSA_PGREP="$S/userbin/pgrep" TSA_OSASCRIPT="$S/userbin/osascript" \
     TSA_DEFAULTS="$S/userbin/defaults" "$@"
 }
-INST="$BASE curl hdiutil ditto xattr open pgrep osascript defaults"
+# codesign falso: a troca segura (ACH-INS-20) confere a copia antes de pôr no lugar
+INST="$BASE curl hdiutil ditto xattr open pgrep osascript defaults codesign"
 
 echo "65. TSA aberto e resposta sim: fecha, instala, reabre e confere o DNA"
 setup trocasim $INST tsa_instalado tsa_rodando

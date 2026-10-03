@@ -1,0 +1,21 @@
+{
+ "schema": "tsa.app.release/v1",
+ "produto": "TSA",
+ "app_id": "com.trafegosa.orca-tsa",
+ "versao": "0.4.14",
+ "build_id": "49d050c9f.20261002T135453Z",
+ "versao_orca_base": "1.4.197",
+ "plataforma": "darwin",
+ "arquitetura": "arm64",
+ "artefato": {
+  "nome": "tsa-macos-arm64.dmg",
+  "sha256": "e515605fa6186d7d83dcd8741c31bec740b933f81099ace13c7aec3c7a06e5b1",
+  "bytes": 225617912,
+  "url": "/v1/app/artefatos/e515605fa6186d7d83dcd8741c31bec740b933f81099ace13c7aec3c7a06e5b1"
+ },
+ "dna_embutido": "1.0.21",
+ "notas": "",
+ "publicado_em": "2026-10-02T19:16:49Z",
+ "key_id": "tsa-cadu-app-release-v1",
+ "assinatura": "aO+AOSIBcPCTqABsQMp/8taoTi5nd84gMto/7QmN2iZO7c99piEjvDb3bIXfF9EKqPNEwI1u6XIigs0oRulyDQ=="
+}

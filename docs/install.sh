@@ -138,6 +138,24 @@ DNA_ATIVO="${TSA_DNA_ATIVO:-$HOME/Library/Application Support/TSA/dna/current.js
 DNA_EMBUTIDO_REL="Contents/Resources/tsa/dna-embedded-release.json"
 DNA_REABRIR="feche o TSA com Cmd+Q e abra de novo"
 
+# ---- Troca segura do app (ACH-INS-20; INSTALAR-F2-CONTRATO v2.0, secao 4.5, regra 6)
+# A troca nunca apaga o app instalado antes de o novo estar inteiro: copia para .TSA-novo.app,
+# confere, guarda o antigo em .TSA-anterior.app no mesmo volume, poe o novo no lugar e so entao
+# apaga o anterior. Parou no meio (falha, Ctrl+C, queda de energia): esta execucao ou a seguinte
+# devolve o anterior ao lugar antes de qualquer outra coisa.
+PLUTIL="${TSA_PLUTIL:-/usr/bin/plutil}"
+TROCA_DEST=""                              # pasta da troca em andamento, para o cleanup
+# Trava compartilhada com o "atualiza aqui" e o agendador (mesmo protocolo do atualizar-aqui.sh):
+# so um processo mexe no app de cada vez, da recuperacao ate o fim da troca.
+TRAVA_DIR="${TSA_TRAVA_DIR:-$HOME/Library/Logs/TSA}"
+LOCK="$TRAVA_DIR/.atualizar-aqui.lock"
+LOCK_PORTA="$TRAVA_DIR/.atualizar-aqui.lock.porta"
+TRAVA=0
+PORTA=0
+RE_BUILD_ID='^[0-9a-f]{7,12}\.[0-9]{8}T[0-9]{6}Z$'
+TROCA_PARAR="${TSA_TESTE_PARAR_TROCA:-}"   # gancho do teste: para depois do passo a, b, c ou d
+TROCA_SINAL="${TSA_TESTE_SINAL:-KILL}"     # gancho do teste: KILL simula queda de energia
+
 TMP_DIR=""
 MOUNT=""
 VS_TMP=""
@@ -149,12 +167,17 @@ warn(){ printf '  \033[0;33m!\033[0m %s\n' "$1"; }
 die(){ printf '\033[0;31m✗ %s\033[0m\n' "$1" >&2; exit 1; }
 
 cleanup(){
+  # Troca do app parada no meio (falha ou sinal): o anterior volta ao lugar (ACH-INS-20).
+  if [ -n "$TROCA_DEST" ]; then recuperar_troca_app "$TROCA_DEST" || true; fi
+  soltar_trava
   if [ -n "$MOUNT" ]; then hdiutil detach "$MOUNT" >/dev/null 2>&1 || true; fi
   if [ -n "$VS_MOUNT" ]; then hdiutil detach "$VS_MOUNT" >/dev/null 2>&1 || true; fi
   if [ -n "$TMP_DIR" ]; then rm -rf "$TMP_DIR"; fi
   if [ -n "$VS_TMP" ]; then rm -rf "$VS_TMP"; fi
 }
 trap cleanup EXIT
+# Ctrl+C, fechar o terminal ou TERM tambem passam pelo cleanup.
+trap 'exit 130' INT TERM HUP
 
 # ---------------------------------------------------------------- app
 
@@ -231,8 +254,118 @@ reabrir_app(){
   fi
 }
 
+troca_parar_teste(){ if [ "$TROCA_PARAR" = "$1" ]; then kill -"$TROCA_SINAL" $$; fi; return 0; }
+
+app_confere(){ codesign --verify --deep --strict "$1" >/dev/null 2>&1; }
+
+build_id_de(){ "$PLUTIL" -extract build_id raw -o - "$1/Contents/Resources/tsa/tsa-version.json" 2>/dev/null || true; }
+
+# A copia confere so com build_id legivel, no formato, e igual ao do app do pacote.
+mesmo_build(){
+  local a b
+  a="$(build_id_de "$1")"; b="$(build_id_de "$2")"
+  [[ "$a" =~ $RE_BUILD_ID ]] && [ "$a" = "$b" ]
+}
+
+# Trava: porta por mkdir (com o pid dentro, para ser retomada se o dono morrer), trava por link
+# simbolico para o pid; dono morto e retomado, dono vivo recusa.
+soltar_porta(){ rm -rf "$LOCK_PORTA"; PORTA=0; }
+pegar_trava(){
+  local dono
+  [ -d "$TRAVA_DIR" ] || { mkdir -p "$TRAVA_DIR" && chmod 700 "$TRAVA_DIR"; }
+  # Porta ocupada recusa, viva ou abandonada, como no atualizar-aqui.sh: retomar a porta de outro
+  # deixaria dois recuperadores passarem juntos (CX-18-13). O pid dentro dela serve ao diagnóstico.
+  mkdir "$LOCK_PORTA" 2>/dev/null || return 1
+  PORTA=1
+  echo $$ >"$LOCK_PORTA/pid"
+  if [ -L "$LOCK" ] || [ -e "$LOCK" ]; then
+    dono="$(readlink "$LOCK" 2>/dev/null || cat "$LOCK" 2>/dev/null || true)"
+    case "$dono" in ''|*[!0-9]*) soltar_porta; return 1 ;; esac
+    if kill -0 "$dono" 2>/dev/null; then soltar_porta; return 1; fi
+    rm -rf "$LOCK"
+    if [ -L "$LOCK" ] || [ -e "$LOCK" ]; then soltar_porta; return 1; fi
+  fi
+  if ! ln -s "$$" "$LOCK" 2>/dev/null || [ "$(readlink "$LOCK")" != "$$" ]; then
+    soltar_porta; return 1
+  fi
+  soltar_porta
+  TRAVA=1
+}
+soltar_trava(){
+  if [ "$PORTA" = 1 ] && [ "$(cat "$LOCK_PORTA/pid" 2>/dev/null)" = "$$" ]; then rm -rf "$LOCK_PORTA"; fi
+  if [ "$TRAVA" = 1 ] && [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ]; then rm -f "$LOCK"; fi
+  TRAVA=0; PORTA=0
+}
+
+# Devolve o anterior ao lugar se a troca parou no meio. Sem .TSA-anterior.app nao ha o que fazer.
+# Com o app e o anterior presentes, o anterior so some se o app passa no codesign.
+recuperar_troca_app(){
+  local alvo="$1/$APP_NAME" bk="$1/.TSA-anterior.app" descartado="$1/.TSA-descartado.app"
+  if [ -d "$bk" ]; then
+    if [ ! -d "$alvo" ]; then
+      mv "$bk" "$alvo" || return 1
+      warn "A troca anterior parou no meio: o TSA que estava instalado voltou ao lugar."
+    elif app_confere "$alvo"; then
+      rm -rf "$bk"
+    else
+      rm -rf "$descartado"
+      mv "$alvo" "$descartado" || return 1
+      mv "$bk" "$alvo" || return 1
+      warn "O TSA novo nao conferiu: o que estava instalado voltou ao lugar."
+    fi
+  fi
+  # .TSA-descartado.app e so deste script; o .TSA-falhou.app do agendador fica para o suporte.
+  [ -d "$alvo" ] && rm -rf "$descartado"
+  rm -rf "$1/.TSA-novo.app"
+  return 0
+}
+
+# Troca o app em $2 pelo de $1, nos passos a a e da regra 6.
+trocar_app(){
+  local src="$1" dest="$2" alvo="$2/$APP_NAME" novo="$2/.TSA-novo.app" bk="$2/.TSA-anterior.app"
+  TROCA_DEST="$dest"
+  # (a) copia ao lado do app instalado
+  rm -rf "$novo"
+  ditto "$src" "$novo" || { rm -rf "$novo"; TROCA_DEST=""; die "Falha ao copiar o app. O TSA que estava instalado continua no lugar."; }
+  # ad-hoc: re-assina e remove a quarentena do Gatekeeper para abrir sem "app danificado"
+  codesign --force --deep --sign - "$novo" >/dev/null 2>&1 || true
+  /usr/bin/xattr -dr com.apple.quarantine "$novo" >/dev/null 2>&1 || true
+  troca_parar_teste a
+  # (b) confere a copia: assinatura e o mesmo build_id do app do pacote
+  if ! app_confere "$novo" || ! mesmo_build "$src" "$novo"; then
+    rm -rf "$novo"; TROCA_DEST=""
+    die "A copia do app nao conferiu. O TSA que estava instalado continua no lugar."
+  fi
+  troca_parar_teste b
+  # Trocar o .app com o TSA rodando deixa o DNA velho no ar: pergunta e fecha antes.
+  preparar_troca_app
+  # (c) o anterior vai para o lado, no mesmo volume
+  if [ -d "$alvo" ]; then
+    rm -rf "$bk"
+    mv "$alvo" "$bk" || { rm -rf "$novo"; TROCA_DEST=""; die "Falha ao guardar o app anterior. Ele continua no lugar."; }
+  fi
+  troca_parar_teste c
+  # (d) o novo entra no lugar; falhou, o anterior volta
+  if [ -e "$alvo" ] || ! mv "$novo" "$alvo"; then
+    recuperar_troca_app "$dest" || true
+    TROCA_DEST=""
+    die "Falha ao pôr o app novo no lugar. O TSA que estava instalado voltou."
+  fi
+  troca_parar_teste d
+  # (e) so com o novo no lugar o anterior some
+  rm -rf "$bk"
+  TROCA_DEST=""
+}
+
 install_app(){
   command -v curl >/dev/null || die "curl nao encontrado."
+  # Troca de uma execucao anterior parada no meio: devolve o anterior antes de tudo, ja com a
+  # trava, que fica ate o fim da troca.
+  pegar_trava || die "Ha outra atualizacao do TSA em andamento, ou uma anterior parou e deixou a trava $LOCK_PORTA. Se nenhuma atualizacao estiver rodando, apague essa pasta e rode o comando de novo."
+  local d
+  for d in "$APP_DEST" "$HOME/Applications"; do
+    recuperar_troca_app "$d" || die "Uma troca anterior do TSA parou no meio e nao consegui desfazer em $d. Fale com o Cadu."
+  done
 
   local arch artifact expected actual src_app dest app_target
   arch="$(uname -m)"
@@ -264,14 +397,9 @@ install_app(){
   dest="$APP_DEST"
   [ -w "$dest" ] || { dest="$HOME/Applications"; mkdir -p "$dest"; }
   app_target="$dest/$APP_NAME"
-  # Trocar o .app com o TSA rodando deixa o DNA velho no ar: pergunta e fecha antes.
-  preparar_troca_app
-  rm -rf "$app_target"
-  ditto "$src_app" "$app_target" || die "Falha ao copiar o app."
+  trocar_app "$src_app" "$dest"
   APP_INSTALADO="$app_target"
-  # ad-hoc: re-assina e remove a quarentena do Gatekeeper para abrir sem "app danificado"
-  codesign --force --deep --sign - "$app_target" >/dev/null 2>&1 || true
-  /usr/bin/xattr -dr com.apple.quarantine "$app_target" >/dev/null 2>&1 || true
+  soltar_trava
   ok "$APP_NAME instalado em $dest"
   reabrir_app
 
