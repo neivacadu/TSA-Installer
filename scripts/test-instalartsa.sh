@@ -247,7 +247,7 @@ run(){ # tty (texto), argumentos do install.sh e variáveis
   /usr/bin/perl -e 'alarm shift; exec @ARGV' 60 env -i HOME="$S/home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="$WORK" \
     FAKE_LOG="$S/log" FAKE_CFG="$S/cfg" FAKE_DIR="$S/fake" FAKE_VOLUME="$S/volume" \
     FAKE_BUILD_DMG="$NOVO_ID" FAKE_DMG_SERVIDO="$DMG" \
-    TSA_PAINEL_API="https://painel.invalido/instalartsa/api" TSA_APP_DEST="$S/Applications" TSA_TTY="$tty" \
+    TSA_PAINEL_API="https://painel.invalido/apptsa/api" TSA_APP_DEST="$S/Applications" TSA_TTY="$tty" \
     TSA_CURL="$FAKE/curl" TSA_HDIUTIL="$FAKE/hdiutil" TSA_CODESIGN="$FAKE/codesign" TSA_DITTO="$FAKE/ditto" \
     TSA_XATTR="$FAKE/xattr" TSA_OPEN="$FAKE/open" TSA_SECURITY="$FAKE/security" TSA_SKIP_PREREQS=1 \
     ${envs[@]+"${envs[@]}"} /bin/bash "$TESTE_SCRIPT" ${args[@]+"${args[@]}"} >"$OUT" 2>&1
@@ -408,7 +408,7 @@ check "sem o script: para sem instalar" '[ $RC != 0 ] && out_has "atualização 
 echo "22. atualizar.sh do painel"
 S="$WORK/c-atu"; rm -rf "$S"; mkdir -p "$S/home/Library/Application Support/TSA/atualizador"
 env -i HOME="$S/home" PATH=/usr/bin:/bin /bin/bash "$ATUALIZAR" >"$S/out1" 2>&1; RC=$?
-check "sem o agendador: sai 1 e aponta o install.sh" '[ $RC = 1 ] && grep -q "instalartsa/install.sh" "$S/out1"'
+check "sem o agendador: sai 1 e aponta o install.sh" '[ $RC = 1 ] && grep -q "apptsa/install.sh" "$S/out1"'
 printf '#!/bin/bash\necho "modo $*" >"%s/modo"\n' "$S" >"$S/home/Library/Application Support/TSA/atualizador/atualizar.sh"
 env -i HOME="$S/home" PATH=/usr/bin:/bin /bin/bash "$ATUALIZAR" >"$S/out2" 2>&1; RC=$?
 check "com o agendador: roda --agora pelo bash" '[ $RC = 0 ] && [ "$(cat "$S/modo")" = "modo --agora" ]'

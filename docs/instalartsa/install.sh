@@ -1,6 +1,6 @@
 #!/bin/bash
 # Instalador do TSA pelo painel (macOS) — INSTALAR-F2-CONTRATO v2.0, seção 7.
-#   curl -fsSL https://ace.caduneiva.com/instalartsa/install.sh | bash
+#   curl -fsSL https://ace.caduneiva.com/apptsa/install.sh | bash
 # O comando é o mesmo para todos: o convite é pedido aqui, sem eco, e nunca entra no comando.
 # Casos (seção 7.4):
 #   A  máquina nova: valida o convite, pergunta o setor, confere a assinatura do manifesto,
@@ -17,7 +17,7 @@ set -euo pipefail
 TSA_SCRIPT_VERSAO="2026.10.02.1"
 
 # Ganchos do teste (scripts/test-instalartsa.sh). Em uso normal ficam no padrão.
-PAINEL_API="${TSA_PAINEL_API:-https://ace.caduneiva.com/instalartsa/api}"
+PAINEL_API="${TSA_PAINEL_API:-https://ace.caduneiva.com/apptsa/api}"
 APP_DEST="${TSA_APP_DEST:-/Applications}"
 TTY_DEV="${TSA_TTY-/dev/tty}"
 CURL="${TSA_CURL:-/usr/bin/curl}"
