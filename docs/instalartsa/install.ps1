@@ -1,0 +1,1566 @@
+# Instalador do TSA pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.2, seções 4, 5 e 6.
+#   irm https://ace.caduneiva.com/apptsa/install.ps1 | iex
+# O comando é o mesmo para todos: o convite é pedido aqui, sem aparecer, e nunca entra no comando.
+# Casos (seção 5.3):
+#   A  máquina nova: valida o convite, pergunta o setor, confere a assinatura do manifesto,
+#      baixa, confere tamanho e SHA-256, instala, entrega o convite ao app e abre o TSA.
+#   B1 já cadastrada, com app: roda o atualizador local com -Agora.
+#   B2 com app e sem cadastro: para sem mudar nada.
+#   C  cadastrada, sem app: reinstala com a credencial de atualização do Gerenciador de Credenciais.
+#   D  TSA instalado fora do lugar padrão: para sem mudar nada.
+# Quem cadastra é o app. Este script nunca troca um TSA que já existe.
+# Uso avançado: & ([scriptblock]::Create((irm https://ace.caduneiva.com/apptsa/install.ps1))) -Perfil trafego
+# Opções: -Perfil <id> (pula a pergunta do setor) e -SemAgendador.
+# Roda em Windows PowerShell 5.1, sem administrador. Não muda a política de execução.
+# Tudo fica em funções e só roda na chamada de Main, na última linha.
+param([string]$Perfil = '', [switch]$SemAgendador)
+
+$TSA_SCRIPT_VERSAO = "2026.10.06.1"
+
+# ---------------------------------------------------------------- estado e mensagens
+function Novo-Estado {
+  $local = $env:LOCALAPPDATA
+  if (-not $local) { $local = [Environment]::GetFolderPath('LocalApplicationData') }
+  $app = Join-Path $local 'Programs\TSA'
+  $tsal = Join-Path $local 'TSA'
+  return @{
+    PainelApi = 'https://ace.caduneiva.com/apptsa/api'
+    PrereqsUrl = 'https://neivacadu.github.io/TSA-Installer/install.ps1'
+    AppId = 'com.trafegosa.orca-tsa'
+    Local = $local
+    App = $app
+    AppExe = Join-Path $app 'TSA.exe'
+    Desinstalador = Join-Path $app 'Uninstall TSA.exe'
+    Tsal = $tsal
+    Atualizador = Join-Path $tsal 'atualizador\atualizar.ps1'
+    Instalacao = Join-Path $tsal 'atualizador\instalacao.json'
+    SemAgendadorMarca = Join-Path $tsal 'atualizador\sem-agendador'
+    Primeira = Join-Path $tsal 'atualizador\primeira-instalacao.json'
+    Estado = Join-Path $tsal 'atualizacao\estado.json'
+    Baixado = Join-Path $tsal 'atualizacao\baixado'
+    PerfilJson = Join-Path $tsal 'perfil.json'
+    TmpRaiz = Join-Path $tsal 'tmp'
+    Trava = Join-Path $tsal 'logs\.atualizar.trava'
+    Resumo = Join-Path $tsal 'logs\atualizar-auto-ultimo.json'
+    Perfis = @('trafego', 'audiovisual', 'copy-criativos', 'cs-operacional', 'gestao')
+    ReApi = '\Ahttps://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?\z'
+    InstaladorS = 600
+    DesinstaladorS = 300
+    SobraS = 30
+    EsperaDownloadS = 3
+    PularFerramentas = $false
+    FraseFalha = 'A versão baixada não passou na conferência. Nada foi instalado. Fale com o Cadu.'
+    Parada = ''
+    Rc = 1
+    Caso = ''
+    Perfil = ''
+    PerfilSugerido = ''
+    SemAgendador = $false
+    Convite = $null
+    Id = ''
+    Api = ''
+    M = $null
+    Tmp = ''
+    ExeAberto = $null
+    TravaAberta = $null
+  }
+}
+
+function Dizer([string]$texto) { Write-Host $texto -ForegroundColor Cyan }
+function Feito([string]$texto) { Write-Host "  ok  $texto" -ForegroundColor Green }
+# Para o script com uma frase para a pessoa. Nunca usa exit: com irm | iex ele fecharia a janela.
+function Parar([string]$texto) {
+  $script:I.Parada = $texto
+  throw 'tsa-parar'
+}
+
+# ---------------------------------------------------------------- leitor estrito de JSON
+# Mesmas regras do lerJsonEstrito do manifesto.mjs e do leitor do install.sh: chave repetida,
+# fração, expoente, sinal e zero à esquerda reprovam. true, false, null e lista só passam com
+# $extras (respostas e arquivos locais); o manifesto nunca os aceita (Json-SemExtras).
+# O ConvertFrom-Json não serve para o manifesto: aceita chave repetida e número com ponto.
+function Json-Ws($e) {
+  $t = $e.t; $i = $e.i
+  while ($i -lt $t.Length -and " `t`n`r".IndexOf($t[$i]) -ge 0) { $i++ }
+  $e.i = $i
+}
+
+function Json-Texto($e) {
+  $t = $e.t; $i = $e.i
+  if ($i -ge $t.Length -or [int]$t[$i] -ne 34) { throw 'json' }
+  $i++
+  $sb = New-Object System.Text.StringBuilder
+  while ($true) {
+    if ($i -ge $t.Length) { throw 'json' }
+    $c = $t[$i]; $n = [int]$c
+    if ($n -eq 34) { $e.i = $i + 1; $e.v = $sb.ToString(); return }
+    if ($n -lt 32) { throw 'json' }
+    if ($n -ne 92) { [void]$sb.Append($c); $i++; continue }
+    if ($i + 1 -ge $t.Length) { throw 'json' }
+    $x = [int]$t[$i + 1]
+    $i += 2
+    if ($x -eq 34) { [void]$sb.Append([char]34) }
+    elseif ($x -eq 92) { [void]$sb.Append([char]92) }
+    elseif ($x -eq 47) { [void]$sb.Append([char]47) }
+    elseif ($x -eq 98) { [void]$sb.Append([char]8) }
+    elseif ($x -eq 102) { [void]$sb.Append([char]12) }
+    elseif ($x -eq 110) { [void]$sb.Append([char]10) }
+    elseif ($x -eq 114) { [void]$sb.Append([char]13) }
+    elseif ($x -eq 116) { [void]$sb.Append([char]9) }
+    elseif ($x -eq 117) {
+      if ($i + 4 -gt $t.Length) { throw 'json' }
+      $h = $t.Substring($i, 4)
+      if ($h -cnotmatch '\A[0-9a-fA-F]{4}\z') { throw 'json' }
+      [void]$sb.Append([char][Convert]::ToInt32($h, 16))
+      $i += 4
+    }
+    else { throw 'json' }
+  }
+}
+
+function Json-Valor($e) {
+  $e.d++
+  if ($e.d -gt 32) { throw 'json' }
+  Json-Ws $e
+  $t = $e.t
+  if ($e.i -ge $t.Length) { throw 'json' }
+  $n = [int]$t[$e.i]
+  if ($n -eq 123) {
+    $e.i++
+    $o = New-Object System.Collections.Specialized.OrderedDictionary ([StringComparer]::Ordinal)
+    Json-Ws $e
+    if ($e.i -lt $t.Length -and [int]$t[$e.i] -eq 125) { $e.i++; $e.v = $o; $e.d--; return }
+    while ($true) {
+      Json-Ws $e
+      Json-Texto $e
+      $k = [string]$e.v
+      if ($o.Contains($k)) { throw 'json' }
+      Json-Ws $e
+      if ($e.i -ge $t.Length -or [int]$t[$e.i] -ne 58) { throw 'json' }
+      $e.i++
+      Json-Valor $e
+      $o.Add($k, $e.v)
+      Json-Ws $e
+      if ($e.i -ge $t.Length) { throw 'json' }
+      $c = [int]$t[$e.i]
+      if ($c -eq 44) { $e.i++; continue }
+      if ($c -eq 125) { $e.i++; $e.v = $o; $e.d--; return }
+      throw 'json'
+    }
+  }
+  if ($n -eq 34) { Json-Texto $e; $e.d--; return }
+  if ($e.x -and $n -eq 91) {
+    $e.i++
+    $l = New-Object System.Collections.ArrayList
+    Json-Ws $e
+    if ($e.i -lt $t.Length -and [int]$t[$e.i] -eq 93) { $e.i++; $e.v = $l; $e.d--; return }
+    while ($true) {
+      Json-Valor $e
+      [void]$l.Add($e.v)
+      Json-Ws $e
+      if ($e.i -ge $t.Length) { throw 'json' }
+      $c = [int]$t[$e.i]
+      if ($c -eq 44) { $e.i++; continue }
+      if ($c -eq 93) { $e.i++; $e.v = $l; $e.d--; return }
+      throw 'json'
+    }
+  }
+  if ($e.x) {
+    if ([string]::CompareOrdinal($t, $e.i, 'true', 0, 4) -eq 0) { $e.i += 4; $e.v = $true; $e.d--; return }
+    if ([string]::CompareOrdinal($t, $e.i, 'false', 0, 5) -eq 0) { $e.i += 5; $e.v = $false; $e.d--; return }
+    if ([string]::CompareOrdinal($t, $e.i, 'null', 0, 4) -eq 0) { $e.i += 4; $e.v = $null; $e.d--; return }
+  }
+  $j = $e.i
+  while ($j -lt $t.Length -and [int]$t[$j] -ge 48 -and [int]$t[$j] -le 57) { $j++ }
+  $dig = $t.Substring($e.i, $j - $e.i)
+  if ($dig.Length -eq 0) { throw 'json' }
+  if ($dig.Length -gt 1 -and [int]$dig[0] -eq 48) { $dig = '0'; $j = $e.i + 1 }
+  if ($j -lt $t.Length) {
+    $d = [int]$t[$j]
+    if ($d -eq 46 -or $d -eq 101 -or $d -eq 69) { throw 'json' }
+  }
+  if ($dig.Length -gt 16) { throw 'json' }
+  $num = [long]::Parse($dig, [Globalization.CultureInfo]::InvariantCulture)
+  if ($num -gt 9007199254740991) { throw 'json' }
+  $e.i = $j
+  $e.v = $num
+  $e.d--
+}
+
+# Devolve o valor numa caixa (@{ v = ... }): assim lista vazia e null não se perdem na saída.
+function Ler-JsonEstrito([string]$texto, [bool]$extras) {
+  $e = @{ t = $texto; i = 0; x = $extras; v = $null; d = 0 }
+  Json-Valor $e
+  Json-Ws $e
+  if ($e.i -ne $texto.Length) { throw 'json' }
+  return @{ v = $e.v }
+}
+
+function Eh-Objeto($v) { return ($v -is [System.Collections.Specialized.OrderedDictionary]) }
+
+# Só objeto, texto e inteiro, em qualquer nível.
+function Json-SemExtras($v) {
+  if ($v -is [string] -or $v -is [long]) { return $true }
+  if (-not (Eh-Objeto $v)) { return $false }
+  foreach ($k in @($v.get_Keys())) {
+    if (-not (Json-SemExtras $v[[string]$k])) { return $false }
+  }
+  return $true
+}
+
+# Campo de um objeto lido: texto, ou $null se falta ou não é texto.
+function Campo-Texto($o, [string]$nome) {
+  if (-not (Eh-Objeto $o)) { return $null }
+  if (-not $o.Contains($nome)) { return $null }
+  $v = $o[$nome]
+  if ($v -is [string]) { return $v }
+  return $null
+}
+
+function Ler-JsonArquivo([string]$caminho) {
+  $bytes = [System.IO.File]::ReadAllBytes($caminho)
+  $texto = (New-Object System.Text.UTF8Encoding $false, $true).GetString($bytes)
+  if ($texto.Length -gt 0 -and [int]$texto[0] -eq 0xFEFF) { $texto = $texto.Substring(1) }
+  return (Ler-JsonEstrito $texto $true).v
+}
+
+# ---------------------------------------------------------------- verificador (seção 5.2, W10)
+# PowerShell puro: System.Numerics.BigInteger e System.Security.Cryptography. Só o modo verificar.
+# Chaves confiáveis, iguais byte a byte a tsa-app/resources/tsa/app-trusted-keys.json (o teste
+# compara os dois). O script não busca chave em lugar nenhum.
+function Chaves-Confiaveis {
+  return @'
+{
+  "tsa-cadu-app-release-v1": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAlERMsGnZR8BgHewu1esGEdYdBB4V256mXQ6VEW5nNZQ=\n-----END PUBLIC KEY-----\n",
+  "tsa-cadu-app-release-v2": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAOgeeJOJQF8+rLmKEWNQ77aRx4poq1WyggwfGmsknD/Q=\n-----END PUBLIC KEY-----\n"
+}
+'@
+}
+
+function Tsa-TextoCanonico([string]$s) {
+  if ($s -cmatch '[\u0000-\u0009\u000b-\u001f\u007f-\u009f]') { return $false }
+  if ($s -cmatch '[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]') { return $false }
+  return $true
+}
+
+function Tsa-Aspas([string]$s) {
+  return '"' + $s.Replace('\', '\\').Replace('"', '\"').Replace("`n", '\n') + '"'
+}
+
+# JSON canônico do contrato F1, seção 2.2: chaves em ordem de código, sem espaço, três escapes.
+function Tsa-Canonico($v) {
+  if ($v -is [string]) {
+    if (-not (Tsa-TextoCanonico $v)) { throw 'texto' }
+    return (Tsa-Aspas $v)
+  }
+  if ($v -is [long]) {
+    if ($v -lt 0 -or $v -gt 9007199254740991) { throw 'numero' }
+    return $v.ToString([Globalization.CultureInfo]::InvariantCulture)
+  }
+  if (Eh-Objeto $v) {
+    $ks = New-Object 'string[]' ($v.get_Count())
+    $v.get_Keys().CopyTo($ks, 0)
+    [Array]::Sort($ks, [StringComparer]::Ordinal)
+    $partes = New-Object System.Collections.Generic.List[string]
+    foreach ($k in $ks) {
+      if ($k -cnotmatch '\A[\x20-\x7e]+\z') { throw 'chave' }
+      $partes.Add((Tsa-Aspas $k) + ':' + (Tsa-Canonico $v[[string]$k]))
+    }
+    return '{' + [string]::Join(',', $partes.ToArray()) + '}'
+  }
+  throw 'tipo'
+}
+
+function Tsa-DataHoraExiste([int]$a, [int]$m, [int]$d, [int]$h, [int]$mi, [int]$s) {
+  if ($h -gt 23 -or $mi -gt 59 -or $s -gt 59) { return $false }
+  if ($m -lt 1 -or $m -gt 12 -or $d -lt 1) { return $false }
+  $dias = @(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[$m - 1]
+  if ($m -eq 2 -and (($a % 4 -eq 0 -and $a % 100 -ne 0) -or $a % 400 -eq 0)) { $dias = 29 }
+  return ($d -le $dias)
+}
+
+function Tsa-BuildIdValido($v) {
+  if (-not ($v -is [string])) { return $false }
+  if ($v -cnotmatch '\A[0-9a-f]{7,12}\.([0-9]{8})T([0-9]{6})Z\z') { return $false }
+  $d = $Matches[1]; $h = $Matches[2]
+  return (Tsa-DataHoraExiste ([int]$d.Substring(0, 4)) ([int]$d.Substring(4, 2)) ([int]$d.Substring(6, 2)) ([int]$h.Substring(0, 2)) ([int]$h.Substring(2, 2)) ([int]$h.Substring(4, 2)))
+}
+
+$script:TSA_ALFABETO = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+# Regra de cada campo do manifesto (contrato F1, seção 2.1). Devolve $true só se o valor vale.
+function Tsa-Regra([string]$campo, $v) {
+  if (-not ($v -is [string])) { return $false }
+  switch -CaseSensitive ($campo) {
+    'schema' { return ($v -ceq 'tsa.app.release/v1') }
+    'produto' { return ($v -ceq 'TSA') }
+    'app_id' { return ($v -ceq 'com.trafegosa.orca-tsa') }
+    'versao' { return ($v -cmatch '\A(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,5})\z') }
+    'build_id' { return (Tsa-BuildIdValido $v) }
+    'versao_orca_base' { return ($v.Length -le 60 -and $v -cmatch '\A[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}(-[0-9A-Za-z.]{1,40})?\z') }
+    'plataforma' { return ($v -ceq 'darwin' -or $v -ceq 'win32') }
+    'arquitetura' { return ($v -ceq 'arm64' -or $v -ceq 'x64') }
+    'dna_embutido' { return ($v -cmatch '\A[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}\z') }
+    'notas' {
+      $pares = [regex]::Matches($v, '[\uD800-\uDBFF][\uDC00-\uDFFF]').Count
+      return (($v.Length - $pares) -le 500 -and (Tsa-TextoCanonico $v))
+    }
+    'publicado_em' {
+      if ($v -cnotmatch '\A([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z\z') { return $false }
+      return (Tsa-DataHoraExiste ([int]$Matches[1]) ([int]$Matches[2]) ([int]$Matches[3]) ([int]$Matches[4]) ([int]$Matches[5]) ([int]$Matches[6]))
+    }
+    'key_id' { return ($v -cmatch '\A[a-z0-9][a-z0-9-]{2,62}\z') }
+    'assinatura' {
+      # Base64 canônico: os bits que sobram no último caractere têm de ser zero.
+      if ($v -cnotmatch '\A[A-Za-z0-9+/]{86}==\z') { return $false }
+      return (($script:TSA_ALFABETO.IndexOf($v[85]) -band 15) -eq 0)
+    }
+  }
+  return $false
+}
+
+# Devolve o nome do primeiro campo irregular, ou '' se o manifesto vale.
+function Tsa-Validar($m) {
+  $campos = @('schema', 'produto', 'app_id', 'versao', 'build_id', 'versao_orca_base', 'plataforma',
+    'arquitetura', 'artefato', 'dna_embutido', 'notas', 'publicado_em', 'key_id', 'assinatura')
+  $camposArtefato = @('nome', 'sha256', 'bytes', 'url')
+  if (-not (Eh-Objeto $m)) { return '(raiz)' }
+  foreach ($k in @($m.get_Keys())) { if ($campos -cnotcontains [string]$k) { return [string]$k } }
+  foreach ($c in $campos) {
+    if (-not $m.Contains($c)) { return $c }
+    if ($c -cne 'artefato' -and (Tsa-Regra $c $m[$c]) -ne $true) { return $c }
+  }
+  $a = $m['artefato']
+  if (-not (Eh-Objeto $a)) { return 'artefato' }
+  foreach ($k in @($a.get_Keys())) { if ($camposArtefato -cnotcontains [string]$k) { return 'artefato.' + [string]$k } }
+  foreach ($c in $camposArtefato) { if (-not $a.Contains($c)) { return 'artefato.' + $c } }
+  $nome = ''
+  $par = [string]$m['plataforma'] + '/' + [string]$m['arquitetura']
+  if ($par -ceq 'darwin/arm64') { $nome = 'tsa-macos-arm64.dmg' }
+  elseif ($par -ceq 'win32/x64') { $nome = 'tsa-windows-x64.exe' }
+  if (-not $nome) { return 'arquitetura' }
+  if (-not ($a['nome'] -is [string]) -or $a['nome'] -cne $nome) { return 'artefato.nome' }
+  if (-not ($a['sha256'] -is [string]) -or $a['sha256'] -cnotmatch '\A[0-9a-f]{64}\z') { return 'artefato.sha256' }
+  if (-not ($a['bytes'] -is [long]) -or $a['bytes'] -lt 1 -or $a['bytes'] -gt 629145600) { return 'artefato.bytes' }
+  if (-not ($a['url'] -is [string]) -or $a['url'] -cne ('/v1/app/artefatos/' + $a['sha256'])) { return 'artefato.url' }
+  return ''
+}
+
+function Tsa-Sha256Hex([byte[]]$bytes) {
+  $h = New-Object System.Security.Cryptography.SHA256CryptoServiceProvider
+  try { return ([BitConverter]::ToString($h.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant() }
+  finally { $h.Dispose() }
+}
+
+# Ed25519, RFC 8032 seção 5.1.7: S menor que L; R recalculado como [S]B - [k]A e comparado por bytes.
+function Ed-Iniciar {
+  if (Get-Variable -Name TSA_ED -Scope Script -ErrorAction SilentlyContinue) { return }
+  $n = { param([string]$s) [System.Numerics.BigInteger]::Parse($s, [Globalization.CultureInfo]::InvariantCulture) }
+  $p = & $n '57896044618658097711785492504343953926634992332820282019728792003956564819949'
+  $bx = & $n '15112221349535400772501151409588531511454012693041857206046113283949847762202'
+  $by = & $n '46316835694926478169428394003475163141307993866256225615783033603165251855960'
+  $script:TSA_ED = @{
+    P = $p
+    L = & $n '7237005577332262213973186563042994240857116359379907606001950938285454250989'
+    D = & $n '37095705934669439343138083508754565189542113879843219016388785533085940283555'
+    D2 = & $n '16295367250680780974490674513165176452449235426866156013048779062215315747161'
+    RaizM1 = & $n '19681161376707505956807079304988542015446066515923890162744021073123829784752'
+    PM2 = & $n '57896044618658097711785492504343953926634992332820282019728792003956564819947'
+    P38 = & $n '7237005577332262213973186563042994240829374041602535252466099000494570602494'
+    Um = [System.Numerics.BigInteger]::One
+    Dois = & $n '2'
+    Base = @($bx, $by, [System.Numerics.BigInteger]::One, [System.Numerics.BigInteger]::Remainder([System.Numerics.BigInteger]::Multiply($bx, $by), $p))
+  }
+}
+
+function Ed-Mod($a) {
+  $r = [System.Numerics.BigInteger]::Remainder($a, $script:TSA_ED.P)
+  if ($r.Sign -lt 0) { $r = [System.Numerics.BigInteger]::Add($r, $script:TSA_ED.P) }
+  return $r
+}
+
+# Inteiro sem sinal a partir de bytes em ordem little-endian.
+function Ed-Le([byte[]]$bytes) {
+  $b = New-Object 'byte[]' ($bytes.Length + 1)
+  [Array]::Copy($bytes, $b, $bytes.Length)
+  return (New-Object System.Numerics.BigInteger (, $b))
+}
+
+function Ed-Soma($p, $q) {
+  $m = $script:TSA_ED.P
+  $a = (($p[1] - $p[0]) * ($q[1] - $q[0])) % $m
+  $b = (($p[1] + $p[0]) * ($q[1] + $q[0])) % $m
+  $c = ($script:TSA_ED.D2 * $p[3] * $q[3]) % $m
+  $d = ($script:TSA_ED.Dois * $p[2] * $q[2]) % $m
+  $e = $b - $a; $f = $d - $c; $g = $d + $c; $h = $b + $a
+  return , @((($e * $f) % $m), (($g * $h) % $m), (($f * $g) % $m), (($e * $h) % $m))
+}
+
+function Ed-Vezes($k, $p) {
+  $r = @([System.Numerics.BigInteger]::Zero, [System.Numerics.BigInteger]::One, [System.Numerics.BigInteger]::One, [System.Numerics.BigInteger]::Zero)
+  foreach ($byte in $k.ToByteArray()) {
+    for ($j = 0; $j -lt 8; $j++) {
+      if ((([int]$byte) -shr $j) -band 1) { $r = Ed-Soma $r $p }
+      $p = Ed-Soma $p $p
+    }
+  }
+  return , $r
+}
+
+# Decodifica um ponto (RFC 8032, 5.1.3). Devolve $null se os bytes não são um ponto da curva.
+function Ed-Ponto([byte[]]$bytes) {
+  if ($bytes.Length -ne 32) { return $null }
+  $ed = $script:TSA_ED
+  $sinal = ([int]$bytes[31]) -shr 7
+  $c = New-Object 'byte[]' 32
+  [Array]::Copy($bytes, $c, 32)
+  $c[31] = [byte](([int]$c[31]) -band 0x7F)
+  $y = Ed-Le $c
+  if ($y.CompareTo($ed.P) -ge 0) { return $null }
+  $y2 = ($y * $y) % $ed.P
+  $u = Ed-Mod ($y2 - $ed.Um)
+  $v = Ed-Mod ($ed.D * $y2 + $ed.Um)
+  $x2 = Ed-Mod ($u * [System.Numerics.BigInteger]::ModPow($v, $ed.PM2, $ed.P))
+  $x = [System.Numerics.BigInteger]::ModPow($x2, $ed.P38, $ed.P)
+  if (-not (Ed-Mod ($x * $x - $x2)).IsZero) { $x = ($x * $ed.RaizM1) % $ed.P }
+  if (-not (Ed-Mod ($x * $x - $x2)).IsZero) { return $null }
+  if ($x.IsZero -and $sinal -eq 1) { return $null }
+  if ((-not $x.IsEven) -ne ($sinal -eq 1)) { $x = $ed.P - $x }
+  return , @($x, $y, $ed.Um, (($x * $y) % $ed.P))
+}
+
+function Ed-Codificar($p) {
+  $ed = $script:TSA_ED
+  $zi = [System.Numerics.BigInteger]::ModPow((Ed-Mod $p[2]), $ed.PM2, $ed.P)
+  $x = Ed-Mod ($p[0] * $zi)
+  $y = Ed-Mod ($p[1] * $zi)
+  $s = New-Object 'byte[]' 32
+  $yb = $y.ToByteArray()
+  [Array]::Copy($yb, $s, [Math]::Min(32, $yb.Length))
+  if (-not $x.IsEven) { $s[31] = [byte](([int]$s[31]) -bor 0x80) }
+  return , $s
+}
+
+# Devolve $true só se a assinatura vale. Qualquer outra saída, ou erro, reprova em quem chama.
+function Ed-Verificar([byte[]]$chave, [byte[]]$mensagem, [byte[]]$assinatura) {
+  Ed-Iniciar
+  $ed = $script:TSA_ED
+  if ($chave.Length -ne 32 -or $assinatura.Length -ne 64) { return $false }
+  $pontoA = Ed-Ponto $chave
+  if ($null -eq $pontoA) { return $false }
+  # Nomes sem depender de maiúscula: no PowerShell, $s e $S são a mesma variável.
+  $bytesS = New-Object 'byte[]' 32
+  [Array]::Copy($assinatura, 32, $bytesS, 0, 32)
+  $parteS = Ed-Le $bytesS
+  if ($parteS.CompareTo($ed.L) -ge 0) { return $false }
+  $buf = New-Object 'byte[]' (64 + $mensagem.Length)
+  [Array]::Copy($assinatura, 0, $buf, 0, 32)
+  [Array]::Copy($chave, 0, $buf, 32, 32)
+  [Array]::Copy($mensagem, 0, $buf, 64, $mensagem.Length)
+  $sha = New-Object System.Security.Cryptography.SHA512CryptoServiceProvider
+  try { $k = [System.Numerics.BigInteger]::Remainder((Ed-Le $sha.ComputeHash($buf)), $ed.L) } finally { $sha.Dispose() }
+  $menosA = @((Ed-Mod ([System.Numerics.BigInteger]::Negate($pontoA[0]))), $pontoA[1], $pontoA[2], (Ed-Mod ([System.Numerics.BigInteger]::Negate($pontoA[3]))))
+  $pontoS = Ed-Vezes $parteS $ed.Base
+  $pontoK = Ed-Vezes $k $menosA
+  $calculado = Ed-Codificar (Ed-Soma $pontoS $pontoK)
+  if ($calculado.Length -ne 32) { return $false }
+  for ($i = 0; $i -lt 32; $i++) { if ($calculado[$i] -ne $assinatura[$i]) { return $false } }
+  return $true
+}
+
+# PEM SPKI Ed25519 exato (44 bytes DER, prefixo do OID 1.3.101.112), base64 canônico.
+function Tsa-ChaveDoPem($pem) {
+  if (-not ($pem -is [string])) { return $null }
+  if ($pem -cnotmatch '\A-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/]{59}=)\n-----END PUBLIC KEY-----\n\z') { return $null }
+  $b64 = $Matches[1]
+  if (($script:TSA_ALFABETO.IndexOf($b64[58]) -band 3) -ne 0) { return $null }
+  $der = [Convert]::FromBase64String($b64)
+  if ($der.Length -ne 44) { return $null }
+  $prefixo = @(0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00)
+  for ($i = 0; $i -lt 12; $i++) { if ($der[$i] -ne $prefixo[$i]) { return $null } }
+  $chave = New-Object 'byte[]' 32
+  [Array]::Copy($der, 12, $chave, 0, 32)
+  return , $chave
+}
+
+# O arquivo de chaves inteiro tem de estar no formato; uma entrada irregular reprova todas.
+function Tsa-ChaveConfiavel([string]$textoChaves, [string]$keyId) {
+  $chaves = (Ler-JsonEstrito $textoChaves $false).v
+  if (-not (Eh-Objeto $chaves) -or $chaves.get_Count() -eq 0) { return $null }
+  $achada = $null
+  foreach ($id in @($chaves.get_Keys())) {
+    if ([string]$id -cnotmatch '\A[a-z0-9][a-z0-9-]{2,62}\z') { return $null }
+    $c = Tsa-ChaveDoPem $chaves[[string]$id]
+    if ($null -eq $c) { return $null }
+    if ([string]$id -ceq $keyId) { $achada = $c }
+  }
+  if ($null -eq $achada) { return $null }
+  return , $achada
+}
+
+# Verifica um manifesto já lido pelo leitor estrito. Resultado: @{ ok; hash; key_id } ou
+# @{ ok = $false; motivo; campo }, com os motivos do contrato (seção 5.2, item 2).
+function Tsa-VerificarArvore($m, [string]$textoChaves) {
+  $invalido = @{ ok = $false; motivo = 'manifesto_invalido'; campo = '(raiz)' }
+  try {
+    if (-not (Json-SemExtras $m)) { return $invalido }
+    $campo = Tsa-Validar $m
+  } catch { return $invalido }
+  if (-not ($campo -is [string])) { return $invalido }
+  if ($campo -cne '') { return @{ ok = $false; motivo = 'manifesto_invalido'; campo = $campo } }
+  $chave = $null
+  try { $chave = Tsa-ChaveConfiavel $textoChaves ([string]$m['key_id']) } catch { $chave = $null }
+  if (-not ($chave -is [byte[]]) -or $chave.Length -ne 32) { return @{ ok = $false; motivo = 'chave_desconhecida' } }
+  $hash = ''
+  try {
+    $resto = New-Object System.Collections.Specialized.OrderedDictionary ([StringComparer]::Ordinal)
+    foreach ($k in @($m.get_Keys())) { if ([string]$k -cne 'assinatura') { $resto.Add([string]$k, $m[[string]$k]) } }
+    $hash = Tsa-Sha256Hex ((New-Object System.Text.UTF8Encoding $false, $true).GetBytes([string](Tsa-Canonico $resto)))
+  } catch { return $invalido }
+  if (-not ($hash -is [string]) -or $hash -cnotmatch '\A[0-9a-f]{64}\z') { return $invalido }
+  $vale = $false
+  try {
+    $vale = Ed-Verificar $chave ([System.Text.Encoding]::ASCII.GetBytes($hash)) ([Convert]::FromBase64String([string]$m['assinatura']))
+  } catch { $vale = $false }
+  if (-not ($vale -is [bool]) -or $vale -ne $true) { return @{ ok = $false; motivo = 'assinatura_invalida' } }
+  return @{ ok = $true; hash = $hash; key_id = [string]$m['key_id'] }
+}
+
+# Modo verificar, a partir do texto do manifesto e do texto do arquivo de chaves.
+function Tsa-Verificar([string]$textoManifesto, [string]$textoChaves) {
+  $m = $null
+  try { $m = (Ler-JsonEstrito $textoManifesto $false).v }
+  catch { return @{ ok = $false; motivo = 'manifesto_invalido'; campo = '(raiz)' } }
+  return (Tsa-VerificarArvore $m $textoChaves)
+}
+
+# ---------------------------------------------------------------- código nativo (Add-Type)
+# Gerenciador de Credenciais (seção 6.2), segredo dentro do pedido HTTP (5.1, itens 4 e 6) e
+# objeto de trabalho do instalador (5.4, item 3). Nenhum segredo no fonte. O convite só existe
+# como SecureString no PowerShell: o texto é aberto aqui, usado e zerado, e nunca volta para o
+# PowerShell, para a saída nem para o pipeline.
+function Carregar-Nativo {
+  if ('TsaNativo1' -as [type]) { return }
+  Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.IO;
+using System.Net;
+using System.Runtime.InteropServices;
+using System.Security;
+using System.Text;
+using System.Threading;
+
+public static class TsaNativo1 {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct CREDENTIAL {
+    public uint Flags; public uint Type; public string TargetName; public string Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten; public uint CredentialBlobSize; public IntPtr CredentialBlob;
+    public uint Persist; public uint AttributeCount; public IntPtr Attributes;
+    public string TargetAlias; public string UserName;
+  }
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool CredWriteW(ref CREDENTIAL c, uint flags);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool CredReadW(string alvo, uint tipo, uint flags, out IntPtr cred);
+  [DllImport("advapi32.dll")]
+  static extern void CredFree(IntPtr p);
+
+  const uint CRED_TYPE_GENERIC = 1;
+  const uint CRED_PERSIST_LOCAL_MACHINE = 2;
+
+  static char[] Abrir(SecureString s) {
+    char[] c = new char[s.Length];
+    IntPtr p = Marshal.SecureStringToBSTR(s);
+    try { Marshal.Copy(p, c, 0, c.Length); } finally { Marshal.ZeroFreeBSTR(p); }
+    return c;
+  }
+  // Convite e credencial de atualização têm o mesmo formato: 43 caracteres base64url.
+  static bool Formato(char[] c) {
+    if (c.Length != 43) return false;
+    foreach (char x in c) {
+      bool ok = (x >= 'A' && x <= 'Z') || (x >= 'a' && x <= 'z') || (x >= '0' && x <= '9') || x == '_' || x == '-';
+      if (!ok) return false;
+    }
+    return true;
+  }
+  // Tira espaço e quebra de linha das pontas (colar costuma trazer).
+  public static SecureString Aparar(SecureString s) {
+    char[] c = Abrir(s);
+    try {
+      int a = 0, b = c.Length;
+      while (a < b && char.IsWhiteSpace(c[a])) a++;
+      while (b > a && char.IsWhiteSpace(c[b - 1])) b--;
+      SecureString r = new SecureString();
+      for (int i = a; i < b; i++) r.AppendChar(c[i]);
+      r.MakeReadOnly();
+      return r;
+    } finally { Array.Clear(c, 0, c.Length); }
+  }
+  public static bool ConviteFormato(SecureString s) {
+    char[] c = Abrir(s);
+    try { return Formato(c); } finally { Array.Clear(c, 0, c.Length); }
+  }
+  // Corpo {"convite":"<convite>"<resto>} escrito direto no pedido.
+  public static void CorpoConvite(HttpWebRequest req, SecureString s, string resto) {
+    char[] c = Abrir(s);
+    byte[] corpo = null;
+    try {
+      if (!Formato(c)) throw new InvalidOperationException("convite fora do formato");
+      byte[] a = Encoding.ASCII.GetBytes("{\"convite\":\"");
+      byte[] z = Encoding.UTF8.GetBytes("\"" + (resto ?? "") + "}");
+      corpo = new byte[a.Length + c.Length + z.Length];
+      Buffer.BlockCopy(a, 0, corpo, 0, a.Length);
+      for (int i = 0; i < c.Length; i++) corpo[a.Length + i] = (byte)c[i];
+      Buffer.BlockCopy(z, 0, corpo, a.Length + c.Length, z.Length);
+      req.ContentType = "application/json";
+      req.ContentLength = corpo.Length;
+      using (Stream st = req.GetRequestStream()) { st.Write(corpo, 0, corpo.Length); }
+    } finally {
+      Array.Clear(c, 0, c.Length);
+      if (corpo != null) Array.Clear(corpo, 0, corpo.Length);
+    }
+  }
+  public static void CabecalhoConvite(HttpWebRequest req, SecureString s) {
+    char[] c = Abrir(s);
+    try {
+      if (!Formato(c)) throw new InvalidOperationException("convite fora do formato");
+      req.Headers["X-TSA-Convite"] = new string(c);
+    } finally { Array.Clear(c, 0, c.Length); }
+  }
+
+  static char[] LerBlob(string alvo) {
+    IntPtr p;
+    if (!CredReadW(alvo, CRED_TYPE_GENERIC, 0, out p)) return null;
+    try {
+      CREDENTIAL cr = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
+      int n = (int)cr.CredentialBlobSize;
+      if (cr.CredentialBlob == IntPtr.Zero || n <= 0 || n > 1024 || (n % 2) != 0) return new char[0];
+      char[] c = new char[n / 2];
+      Marshal.Copy(cr.CredentialBlob, c, 0, c.Length);
+      for (int i = 0; i < n; i++) Marshal.WriteByte(cr.CredentialBlob, i, 0);
+      return c;
+    } finally { CredFree(p); }
+  }
+  public static bool CredExiste(string alvo) {
+    char[] c = LerBlob(alvo);
+    if (c == null) return false;
+    Array.Clear(c, 0, c.Length);
+    return true;
+  }
+  // Lê a credencial de atualização e a põe no cabeçalho. Fora do formato: não envia nada.
+  public static bool CabecalhoCredencial(HttpWebRequest req, string alvo) {
+    char[] c = LerBlob(alvo);
+    if (c == null) return false;
+    try {
+      if (!Formato(c)) return false;
+      req.Headers["Authorization"] = "Bearer " + new string(c);
+      return true;
+    } finally { Array.Clear(c, 0, c.Length); }
+  }
+  public static void CredGravar(string alvo, string usuario, SecureString s) {
+    IntPtr p = Marshal.SecureStringToBSTR(s);
+    try {
+      CREDENTIAL cr = new CREDENTIAL();
+      cr.Type = CRED_TYPE_GENERIC;
+      cr.TargetName = alvo;
+      cr.UserName = usuario;
+      cr.CredentialBlob = p;
+      cr.CredentialBlobSize = (uint)(s.Length * 2);
+      cr.Persist = CRED_PERSIST_LOCAL_MACHINE;
+      if (!CredWriteW(ref cr, 0)) throw new InvalidOperationException("CredWrite falhou: " + Marshal.GetLastWin32Error());
+    } finally { Marshal.ZeroFreeBSTR(p); }
+  }
+
+  // ---- objeto de trabalho
+  [StructLayout(LayoutKind.Sequential)]
+  struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+    public long PerProcessUserTimeLimit; public long PerJobUserTimeLimit; public uint LimitFlags;
+    public UIntPtr MinimumWorkingSetSize; public UIntPtr MaximumWorkingSetSize; public uint ActiveProcessLimit;
+    public UIntPtr Affinity; public uint PriorityClass; public uint SchedulingClass;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  struct IO_COUNTERS { public ulong a, b, c, d, e, f; }
+  [StructLayout(LayoutKind.Sequential)]
+  struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+    public JOBOBJECT_BASIC_LIMIT_INFORMATION Basic; public IO_COUNTERS Io;
+    public UIntPtr ProcessMemoryLimit; public UIntPtr JobMemoryLimit;
+    public UIntPtr PeakProcessMemoryUsed; public UIntPtr PeakJobMemoryUsed;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION {
+    public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime;
+    public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses;
+  }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct STARTUPINFO {
+    public int cb; public IntPtr lpReserved, lpDesktop, lpTitle;
+    public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+    public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern IntPtr CreateJobObjectW(IntPtr attr, string nome);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool SetInformationJobObject(IntPtr job, int classe, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, uint tam);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool QueryInformationJobObject(IntPtr job, int classe, out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info, uint tam, IntPtr ret);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool AssignProcessToJobObject(IntPtr job, IntPtr processo);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool TerminateJobObject(IntPtr job, uint codigo);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool CreateProcessW(string app, StringBuilder linha, IntPtr pa, IntPtr ta, bool herdar, uint flags,
+    IntPtr ambiente, string pasta, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern uint ResumeThread(IntPtr thread);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetExitCodeProcess(IntPtr h, out uint codigo);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool TerminateProcess(IntPtr h, uint codigo);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool IsProcessInJob(IntPtr processo, IntPtr job, out bool dentro);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern uint GetFinalPathNameByHandleW(IntPtr h, StringBuilder caminho, uint tam, uint flags);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern IntPtr CreateFileW(string nome, uint acesso, uint partilha, IntPtr seg, uint criacao, uint flags, IntPtr modelo);
+
+  // Caminho final de um identificador aberto, como o sistema o vê (sem junção nem atalho no meio).
+  public static string CaminhoFinal(Microsoft.Win32.SafeHandles.SafeFileHandle h) {
+    StringBuilder sb = new StringBuilder(1024);
+    uint n = GetFinalPathNameByHandleW(h.DangerousGetHandle(), sb, (uint)sb.Capacity, 0);
+    if (n == 0 || n >= sb.Capacity) return null;
+    return sb.ToString();
+  }
+  // Caminho final de uma pasta (aberta só para consulta).
+  public static string CaminhoFinalDaPasta(string pasta) {
+    IntPtr h = CreateFileW(pasta, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+    if (h == IntPtr.Zero || h == new IntPtr(-1)) return null;
+    try {
+      StringBuilder sb = new StringBuilder(1024);
+      uint n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0);
+      if (n == 0 || n >= sb.Capacity) return null;
+      return sb.ToString();
+    } finally { CloseHandle(h); }
+  }
+
+  const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+  const uint CREATE_SUSPENDED = 0x4;
+  const uint CREATE_UNICODE_ENVIRONMENT = 0x400;
+
+  static uint Ativos(IntPtr job) {
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION a;
+    if (!QueryInformationJobObject(job, 1, out a, (uint)Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)), IntPtr.Zero)) return 1;
+    return a.ActiveProcesses;
+  }
+  // Roda "<exe>" <argumentos> dentro de um objeto de trabalho que morre com este processo
+  // (KILL_ON_JOB_CLOSE, identificador não herdável). Ordem da seção 5.4, item 3: o processo nasce
+  // suspenso, entra no objeto, a entrada é conferida e só então ele anda: nenhum filho escapa. Espera o processo e o objeto ficar sem processos; no tempo esgotado encerra
+  // a árvore inteira. Não herda identificadores (nem a trava, nem o arquivo conferido).
+  // Devolve { estado, código }: estado 0 terminou, 1 tempo esgotado, 2 não conseguiu rodar.
+  public static long[] Executar(string exe, string argumentos, int limiteMs) {
+    IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
+    if (job == IntPtr.Zero) return new long[] { 2, Marshal.GetLastWin32Error() };
+    try {
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+      info.Basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      if (!SetInformationJobObject(job, 9, ref info, (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))))
+        return new long[] { 2, Marshal.GetLastWin32Error() };
+      STARTUPINFO si = new STARTUPINFO();
+      si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+      PROCESS_INFORMATION pi;
+      StringBuilder linha = new StringBuilder("\"" + exe + "\" " + argumentos);
+      if (!CreateProcessW(exe, linha, IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+          IntPtr.Zero, null, ref si, out pi))
+        return new long[] { 2, Marshal.GetLastWin32Error() };
+      try {
+        bool dentro = false;
+        if (!AssignProcessToJobObject(job, pi.hProcess) || !IsProcessInJob(pi.hProcess, job, out dentro) || !dentro) {
+          int erro = Marshal.GetLastWin32Error();
+          TerminateProcess(pi.hProcess, 1);
+          WaitForSingleObject(pi.hProcess, 5000);
+          return new long[] { 2, erro };
+        }
+        ResumeThread(pi.hThread);
+        DateTime fim = DateTime.UtcNow.AddMilliseconds(limiteMs);
+        bool saiu = false;
+        while (DateTime.UtcNow < fim) {
+          if (!saiu) saiu = WaitForSingleObject(pi.hProcess, 200) == 0;
+          if (saiu) {
+            if (Ativos(job) == 0) break;
+            Thread.Sleep(200);
+          }
+        }
+        if (!saiu || Ativos(job) != 0) {
+          TerminateJobObject(job, 1);
+          DateTime ate = DateTime.UtcNow.AddSeconds(15);
+          while (DateTime.UtcNow < ate && Ativos(job) != 0) Thread.Sleep(100);
+          return new long[] { 1, 0 };
+        }
+        uint codigo;
+        if (!GetExitCodeProcess(pi.hProcess, out codigo)) return new long[] { 2, Marshal.GetLastWin32Error() };
+        return new long[] { 0, codigo };
+      } finally { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
+    } finally { CloseHandle(job); }
+  }
+}
+'@
+}
+
+# ---------------------------------------------------------------- arquivos
+function Hora-Agora { return [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture) }
+
+# Todo JSON gravado é UTF-8 sem BOM, por arquivo temporário na mesma pasta e troca de nome.
+function Gravar-Atomico([string]$caminho, [string]$texto) {
+  $pasta = [System.IO.Path]::GetDirectoryName($caminho)
+  [void][System.IO.Directory]::CreateDirectory($pasta)
+  $tmp = Join-Path $pasta ('.' + [System.IO.Path]::GetFileName($caminho) + '.' + $PID + '.tmp')
+  [System.IO.File]::WriteAllText($tmp, $texto, (New-Object System.Text.UTF8Encoding $false))
+  if ([System.IO.File]::Exists($caminho)) { [System.IO.File]::Replace($tmp, $caminho, $null) }
+  else { [System.IO.File]::Move($tmp, $caminho) }
+}
+
+function Mesma-Pasta([string]$a, [string]$b) {
+  try {
+    $x = [System.IO.Path]::GetFullPath($a).TrimEnd('\')
+    $y = [System.IO.Path]::GetFullPath($b).TrimEnd('\')
+    return [string]::Equals($x, $y, [StringComparison]::OrdinalIgnoreCase)
+  } catch { return $false }
+}
+
+# ---------------------------------------------------------------- HTTP (seção 5.1, item 6)
+# Só o cliente do .NET dentro deste processo. O segredo entra no pedido pelo código nativo:
+#   corpo-convite         corpo {"convite":...<Extra>}
+#   cabecalho-convite     X-TSA-Convite
+#   cabecalho-credencial  Authorization: Bearer <credencial de atualização>
+# Sem redirecionamento: um cabeçalho com segredo não segue para outro endereço.
+# Devolve @{ Codigo; Texto; Completo }. Codigo 0 = sem resposta; -1 = credencial ilegível.
+function Http-Pedir {
+  param([string]$Metodo, [string]$Url, [string]$Segredo = '', [string]$Extra = '', [string]$Destino = '',
+    [long]$Desde = 0, [long]$Limite = 0)
+  $r = @{ Codigo = 0; Texto = ''; Completo = $false }
+  $resp = $null
+  try {
+    $req = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Url)
+    $req.Method = $Metodo
+    $req.AllowAutoRedirect = $false
+    $req.Timeout = 30000
+    $req.ReadWriteTimeout = 60000
+    $req.UserAgent = 'tsa-install.ps1'
+    $req.ServicePoint.Expect100Continue = $false
+    if ($Desde -gt 0) { $req.AddRange([long]$Desde) }
+    if ($Segredo -ceq 'cabecalho-convite') { [TsaNativo1]::CabecalhoConvite($req, $script:I.Convite) }
+    elseif ($Segredo -ceq 'cabecalho-credencial') {
+      if (-not [TsaNativo1]::CabecalhoCredencial($req, ('tsa-atualizador:' + $script:I.Id))) { $r.Codigo = -1; return $r }
+    }
+    elseif ($Segredo -ceq 'corpo-convite') { [TsaNativo1]::CorpoConvite($req, $script:I.Convite, $Extra) }
+    elseif ($Segredo -cne '') { throw 'segredo desconhecido' }
+    try { $resp = $req.GetResponse() }
+    catch {
+      $ex = $_.Exception
+      while ($null -ne $ex -and -not ($ex -is [System.Net.WebException])) { $ex = $ex.InnerException }
+      if ($null -eq $ex -or $null -eq $ex.Response) { return $r }
+      $resp = $ex.Response
+    }
+    $r.Codigo = [int]$resp.StatusCode
+    $entrada = $resp.GetResponseStream()
+    $buf = New-Object 'byte[]' 65536
+    if ($Destino -and ($r.Codigo -eq 200 -or $r.Codigo -eq 206)) {
+      # 200 com pedido de retomada: o servidor mandou o arquivo inteiro; recomeça do zero.
+      $modo = [System.IO.FileMode]::Create
+      $total = [long]0
+      if ($r.Codigo -eq 206) { $modo = [System.IO.FileMode]::Append; $total = $Desde }
+      $saida = New-Object System.IO.FileStream ($Destino, $modo, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      try {
+        while ($true) {
+          $n = $entrada.Read($buf, 0, $buf.Length)
+          if ($n -le 0) { break }
+          $total += $n
+          if ($Limite -gt 0 -and $total -gt $Limite) { throw 'maior que o manifesto' }
+          $saida.Write($buf, 0, $n)
+        }
+        $r.Completo = $true
+      } finally { $saida.Dispose() }
+    } else {
+      $mem = New-Object System.IO.MemoryStream
+      while ($mem.Length -le 1048576) {
+        $n = $entrada.Read($buf, 0, $buf.Length)
+        if ($n -le 0) { $r.Completo = $true; break }
+        $mem.Write($buf, 0, $n)
+      }
+      if ($r.Completo) { $r.Texto = (New-Object System.Text.UTF8Encoding $false, $true).GetString($mem.ToArray()) }
+    }
+  } catch {
+    $r.Completo = $false
+  } finally {
+    if ($null -ne $resp) { try { $resp.Close() } catch { } }
+  }
+  return $r
+}
+
+# Lê a resposta como objeto JSON; $null se não for um objeto regular.
+function Objeto-Da-Resposta($r) {
+  if (-not $r.Completo) { return $null }
+  try { $o = (Ler-JsonEstrito ([string]$r.Texto) $true).v } catch { return $null }
+  if (-not (Eh-Objeto $o)) { return $null }
+  return $o
+}
+
+# ---------------------------------------------------------------- ambiente (seção 5.1, item 3)
+function Conferir-Ambiente {
+  $v = [Environment]::OSVersion
+  if ($v.Platform -ne [PlatformID]::Win32NT -or $v.Version.Major -lt 10 -or ($v.Version.Major -eq 10 -and $v.Version.Build -lt 19045)) {
+    Parar 'O TSA precisa do Windows 10 (22H2) ou do Windows 11.'
+  }
+  $arq = $env:PROCESSOR_ARCHITEW6432
+  if (-not $arq) { $arq = $env:PROCESSOR_ARCHITECTURE }
+  if ($arq -cne 'AMD64') { Parar 'O TSA roda só em Windows de 64 bits (x64).' }
+  if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { Parar 'Rode este comando no Windows PowerShell.' }
+  $eu = New-Object System.Security.Principal.WindowsPrincipal ([System.Security.Principal.WindowsIdentity]::GetCurrent())
+  if ($eu.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Parar "Rode sem 'Executar como administrador': o TSA é instalado no seu perfil."
+  }
+}
+
+# Controle Inteligente de Aplicativos (seção 4, item 5). Ausente ou erro conta como desligado.
+function Conferir-ControleInteligente {
+  $estado = ''
+  try {
+    $s = Get-MpComputerStatus -ErrorAction Stop
+    $p = $s.PSObject.Properties['SmartAppControlState']
+    if ($null -ne $p -and $null -ne $p.Value) { $estado = [string]$p.Value }
+  } catch { $estado = '' }
+  if ($estado -ieq 'On') {
+    Parar 'Este Windows está com o Controle Inteligente de Aplicativos ligado e não aceita o TSA sem certificado. Fale com o Cadu.'
+  }
+  if ($estado -ieq 'Eval') {
+    Write-Host 'Aviso: o Controle Inteligente de Aplicativos deste Windows está em avaliação. Se a instalação for bloqueada, fale com o Cadu.' -ForegroundColor Yellow
+  }
+}
+
+# ---------------------------------------------------------------- trava (seção 6.3)
+# Compartilhamento nenhum; o sistema solta quando este processo morre. Qualquer erro = ocupada.
+function Pegar-Trava {
+  if ($null -ne $script:I.TravaAberta) { return $true }
+  try {
+    [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($script:I.Trava))
+    $script:I.TravaAberta = [System.IO.File]::Open($script:I.Trava, [System.IO.FileMode]::OpenOrCreate,
+      [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    return $true
+  } catch { $script:I.TravaAberta = $null; return $false }
+}
+function Soltar-Trava {
+  if ($null -ne $script:I.TravaAberta) { try { $script:I.TravaAberta.Dispose() } catch { }; $script:I.TravaAberta = $null }
+}
+
+# ---------------------------------------------------------------- classificação (seção 5.3)
+# troca em estado.json: 'objeto' (troca interrompida), 'null', 'ausente', 'ilegivel' ou 'outro'.
+# Este arquivo é do atualizador, escrito com ConvertTo-Json (seção 7.1); não é o manifesto.
+function Ler-Troca {
+  if (-not [System.IO.File]::Exists($script:I.Estado)) { return 'ausente' }
+  try { $o = ConvertFrom-Json ([System.IO.File]::ReadAllText($script:I.Estado, [System.Text.Encoding]::UTF8)) }
+  catch { return 'ilegivel' }
+  if (-not ($o -is [System.Management.Automation.PSCustomObject])) { return 'ilegivel' }
+  $p = $o.PSObject.Properties['troca']
+  if ($null -eq $p) { return 'ilegivel' }
+  if ($null -eq $p.Value) { return 'null' }
+  if ($p.Value -is [System.Management.Automation.PSCustomObject]) { return 'objeto' }
+  return 'outro'
+}
+
+function Caminho-PowerShell {
+  $sys = 'System32'
+  if (-not [Environment]::Is64BitProcess -and [Environment]::Is64BitOperatingSystem) { $sys = 'Sysnative' }
+  return (Join-Path $env:SystemRoot "$sys\WindowsPowerShell\v1.0\powershell.exe")
+}
+
+# Linha de chamada da seção 7.1. A política vale só para esse processo.
+function Rodar-Atualizador([string]$opcao) {
+  $ps = Caminho-PowerShell
+  & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script:I.Atualizador $opcao | Out-Host
+  return [int]$LASTEXITCODE
+}
+
+# Antes de classificar, item 1: troca interrompida.
+function Retomar-Troca {
+  if ((Ler-Troca) -cne 'objeto') { return }
+  if (-not [System.IO.File]::Exists($script:I.Atualizador)) { Parar 'Há uma atualização interrompida. Fale com o Cadu.' }
+  $rc = 1
+  try { $rc = Rodar-Atualizador '-Retomar' } catch { $rc = 1 }
+  # Só segue com o estado lido e "troca": null explícito.
+  if ($rc -ne 0 -or (Ler-Troca) -cne 'null') { Parar 'Há uma atualização interrompida. Fale com o Cadu.' }
+}
+
+# Seção 5.4, item 4: instalador que sobrou. Só roda com a trava na mão: aí não existe outro script
+# coordenando, e processo com executável em baixado\, em tmp\ ou igual ao desinstalador é órfão.
+# Encerra cada um com os filhos e espera até 30 s. Devolve $true só se não sobrou nenhum.
+# Sem a lista de processos, conta como "sobrou": não mexe em nada.
+function Achar-Sobras {
+  $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+  $pastas = @(($script:I.Baixado.TrimEnd('\') + '\'), ($script:I.TmpRaiz.TrimEnd('\') + '\'))
+  $raizes = New-Object System.Collections.Generic.List[int]
+  foreach ($p in $procs) {
+    $exe = [string]$p.ExecutablePath
+    if (-not $exe) { continue }
+    $eh = [string]::Equals($exe, $script:I.Desinstalador, [StringComparison]::OrdinalIgnoreCase)
+    foreach ($pasta in $pastas) { if ($exe.StartsWith($pasta, [StringComparison]::OrdinalIgnoreCase)) { $eh = $true } }
+    if ($eh) { $raizes.Add([int]$p.ProcessId) }
+  }
+  # Filhos, netos e assim por diante.
+  $todos = New-Object System.Collections.Generic.List[int]
+  $fila = New-Object System.Collections.Queue
+  foreach ($r in $raizes) { $fila.Enqueue($r) }
+  while ($fila.Count -gt 0) {
+    $id = [int]$fila.Dequeue()
+    if ($todos.Contains($id) -or $id -eq $PID) { continue }
+    $todos.Add($id)
+    foreach ($p in $procs) { if ([int]$p.ParentProcessId -eq $id) { $fila.Enqueue([int]$p.ProcessId) } }
+  }
+  return , @{ Raizes = $raizes.Count; Todos = $todos }
+}
+function Encerrar-Sobras {
+  if ($null -eq $script:I.TravaAberta) { return $false }
+  $fim = [DateTime]::UtcNow.AddSeconds($script:I.SobraS)
+  while ($true) {
+    try { $a = Achar-Sobras } catch { return $false }
+    if ($a.Raizes -eq 0) { return $true }
+    if ([DateTime]::UtcNow -ge $fim) { return $false }
+    foreach ($id in $a.Todos) { try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { } }
+    Start-Sleep -Milliseconds 500
+  }
+}
+
+# Desfaz uma primeira instalação que não terminou. Só roda com a marca presente e a trava na mão.
+# O desinstalador roda no lugar (_?=, último argumento, sem aspas), dentro do objeto de trabalho;
+# nesse modo ele não apaga a si mesmo, e o que sobrar de $APP sai depois.
+# Devolve $true se a pasta do app e a marca saíram.
+function Desfazer-Primeira {
+  if ((Encerrar-Sobras) -ne $true) { return $false }
+  if ([System.IO.File]::Exists($script:I.Desinstalador)) {
+    try { [void][TsaNativo1]::Executar($script:I.Desinstalador, ('/S _?=' + $script:I.App), $script:I.DesinstaladorS * 1000) } catch { }
+  }
+  try {
+    if ([System.IO.Directory]::Exists($script:I.App)) { [System.IO.Directory]::Delete($script:I.App, $true) }
+    if ([System.IO.Directory]::Exists($script:I.App)) { return $false }
+    [System.IO.File]::Delete($script:I.Primeira)
+  } catch { return $false }
+  return (-not [System.IO.File]::Exists($script:I.Primeira))
+}
+
+# Identidade da marca de primeira instalação: sha256 e iniciada_em. '' se não existe ou não lê.
+function Ler-Marca {
+  if (-not [System.IO.File]::Exists($script:I.Primeira)) { return '' }
+  try { $o = Ler-JsonArquivo $script:I.Primeira } catch { return 'ilegivel' }
+  return ([string](Campo-Texto $o 'sha256') + '|' + [string](Campo-Texto $o 'iniciada_em'))
+}
+
+# Antes de classificar, item 2: primeira instalação interrompida. Devolve $true quando a outra
+# execução terminou enquanto esta esperava a trava: nada é apagado e a classificação recomeça.
+function Recuperar-Primeira {
+  if (-not [System.IO.File]::Exists($script:I.Primeira)) { return $false }
+  $antes = Ler-Marca
+  if (-not (Pegar-Trava)) { Parar 'Há outra instalação em andamento. Espere terminar e rode o comando de novo.' }
+  try {
+    # Com a trava na mão, lê de novo: a marca tem de ser a mesma, e não pode haver troca.
+    if (-not [System.IO.File]::Exists($script:I.Primeira) -or (Ler-Marca) -cne $antes -or (Ler-Troca) -ceq 'objeto') { return $true }
+    Dizer 'Uma instalação anterior parou no meio. Limpando...'
+    if ((Desfazer-Primeira) -ne $true) {
+      Parar 'Não consegui limpar a instalação que parou no meio. Espere um minuto e rode o comando de novo. Se repetir, fale com o Cadu.'
+    }
+  } finally { Soltar-Trava }
+  return $false
+}
+
+function Esta-Cadastrada {
+  $script:I.Id = ''
+  $script:I.Api = ''
+  if (-not [System.IO.File]::Exists($script:I.Instalacao)) { return $false }
+  try { $o = Ler-JsonArquivo $script:I.Instalacao } catch { return $false }
+  $id = Campo-Texto $o 'installation_id'
+  $api = Campo-Texto $o 'api'
+  if ($null -eq $id -or $null -eq $api) { return $false }
+  if ($id -cnotmatch '\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z') { return $false }
+  if ($api -cnotmatch $script:I.ReApi) { return $false }
+  if ([TsaNativo1]::CredExiste('tsa-atualizador:' + $id) -ne $true) { return $false }
+  $script:I.Id = $id
+  $script:I.Api = $api
+  return $true
+}
+
+# Entrada de desinstalação do TSA no registro apontando para fora de $APP (caso D).
+function Ha-TsaForaDoPadrao {
+  foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryHive]::LocalMachine)) {
+    foreach ($vista in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+      $u = $null
+      try {
+        $u = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, $vista).OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall')
+      } catch { $u = $null }
+      if ($null -eq $u) { continue }
+      foreach ($nome in $u.GetSubKeyNames()) {
+        $k = $null
+        try { $k = $u.OpenSubKey($nome) } catch { $k = $null }
+        if ($null -eq $k) { continue }
+        $exibe = [string]$k.GetValue('DisplayName', '')
+        $ehTsa = ($exibe -cmatch '\ATSA( [0-9][0-9A-Za-z.+-]*)?\z') -or
+          [string]::Equals($nome.Trim('{', '}'), $script:I.AppId, [StringComparison]::OrdinalIgnoreCase)
+        if (-not $ehTsa) { continue }
+        $pastas = New-Object System.Collections.Generic.List[string]
+        $local = [string]$k.GetValue('InstallLocation', '')
+        if ($local.Trim()) { $pastas.Add($local.Trim().Trim('"')) }
+        foreach ($valor in @('DisplayIcon', 'UninstallString', 'QuietUninstallString')) {
+          $t = [string]$k.GetValue($valor, '')
+          if ($t -match '\A\s*"([^"]+\.exe)"' -or $t -match '\A\s*(.+?\.exe)') {
+            try { $pastas.Add([System.IO.Path]::GetDirectoryName($Matches[1])) } catch { }
+          }
+        }
+        foreach ($pasta in $pastas) {
+          if ($pasta -and -not (Mesma-Pasta $pasta $script:I.App)) { return $true }
+        }
+      }
+    }
+  }
+  return $false
+}
+
+function Classificar {
+  $temExe = [System.IO.File]::Exists($script:I.AppExe)
+  $cadastrada = ((Esta-Cadastrada) -eq $true)
+  if ($temExe) {
+    if ($cadastrada) { return 'B1' }
+    return 'B2'
+  }
+  if ((Ha-TsaForaDoPadrao) -ne $false) { return 'D' }
+  if ($cadastrada) { return 'C' }
+  return 'A'
+}
+
+# ---------------------------------------------------------------- convite e setor
+# Seção 5.1, item 4: Read-Host -AsSecureString; o texto só é aberto na hora de cada envio, dentro
+# do código nativo. Nunca vai em argumento, variável de ambiente, arquivo, saída nem log.
+function Pedir-Convite {
+  for ($tentativa = 1; $tentativa -le 3; $tentativa++) {
+    $lido = Read-Host -AsSecureString 'Cole o seu convite e aperte Enter (nada aparece enquanto você cola)'
+    if (-not ($lido -is [System.Security.SecureString])) { Parar 'Sem resposta do convite. Rode o comando de novo.' }
+    $s = [TsaNativo1]::Aparar($lido)
+    $lido.Dispose()
+    if ([TsaNativo1]::ConviteFormato($s) -ne $true) {
+      $s.Dispose()
+      Write-Host '  O convite tem 43 caracteres. Confira e cole de novo.'
+      continue
+    }
+    $script:I.Convite = $s
+    $r = Http-Pedir -Metodo 'POST' -Url ($script:I.PainelApi + '/convite/validar') -Segredo 'corpo-convite'
+    $o = Objeto-Da-Resposta $r
+    if ($r.Codigo -eq 200) {
+      if ($null -eq $o -or -not $o.Contains('valido') -or $o['valido'] -isnot [bool] -or $o['valido'] -ne $true) {
+        Parar 'Resposta estranha da Central. Tente de novo mais tarde.'
+      }
+      $sugerido = Campo-Texto $o 'perfil_sugerido'
+      if ($null -ne $sugerido -and $script:I.Perfis -ccontains $sugerido) { $script:I.PerfilSugerido = $sugerido }
+      Feito 'Convite válido'
+      return
+    }
+    if ($r.Codigo -eq 401) {
+      $script:I.Convite.Dispose()
+      $script:I.Convite = $null
+      Write-Host '  Convite não reconhecido. Confira e cole de novo.'
+      continue
+    }
+    if ($r.Codigo -eq 410) {
+      $erro = Campo-Texto $o 'error'
+      if ($erro -ceq 'convite_usado') { Parar 'Este convite já foi usado. Peça outro ao Cadu.' }
+      if ($erro -ceq 'convite_expirado') { Parar 'Este convite venceu. Peça outro ao Cadu.' }
+      Parar 'Este convite foi cancelado. Peça outro ao Cadu.'
+    }
+    if ($r.Codigo -eq 429) { Parar 'Muitas tentativas. Espere uma hora e rode o comando de novo.' }
+    Parar "Não consegui falar com a Central (código $($r.Codigo)). Tente de novo em alguns minutos."
+  }
+  Parar 'Três tentativas sem convite válido. Peça o convite de novo ao Cadu.'
+}
+
+function Perguntar-Setor {
+  if ($script:I.Perfil) { return }
+  while ($true) {
+    Write-Host ''
+    Write-Host 'Qual é o seu setor?'
+    Write-Host '  1. Tráfego'
+    Write-Host '  2. Audiovisual'
+    Write-Host '  3. Copy e Criativos'
+    Write-Host '  4. CS/operacional'
+    Write-Host '  5. Gestão'
+    if ($script:I.PerfilSugerido) { Write-Host "(O Cadu sugeriu: $($script:I.PerfilSugerido))" }
+    $r = Read-Host 'Digite o número e aperte Enter'
+    if ($null -eq $r) { Parar 'Sem resposta do setor. Rode o comando de novo.' }
+    $r = ([string]$r).Trim()
+    if ($r -cmatch '\A[1-5]\z') { $script:I.Perfil = $script:I.Perfis[[int]$r - 1]; return }
+    Write-Host '  Escolha um número de 1 a 5.'
+  }
+}
+
+# ---------------------------------------------------------------- manifesto e download
+# Caso A pela rota do convite; caso C pela credencial de atualização. Devolve o objeto da resposta.
+function Pedir-Manifesto {
+  if ($script:I.Caso -ceq 'A') {
+    $r = Http-Pedir -Metodo 'POST' -Url ($script:I.PainelApi + '/release/nova-instalacao') -Segredo 'corpo-convite' `
+      -Extra ',"plataforma":"win32","arquitetura":"x64"'
+  } else {
+    $r = Http-Pedir -Metodo 'GET' -Url ($script:I.Api + '/v1/app/release?plataforma=win32&arquitetura=x64') -Segredo 'cabecalho-credencial'
+  }
+  if ($r.Codigo -eq 200) {
+    $o = Objeto-Da-Resposta $r
+    if ($null -eq $o) { Parar $script:I.FraseFalha }
+    return $o
+  }
+  if ($r.Codigo -eq 204) { Parar 'Ainda não há versão liberada. Fale com o Cadu.' }
+  if ($r.Codigo -eq 410) { Parar 'O convite deixou de valer. Peça outro ao Cadu.' }
+  if ($r.Codigo -eq 401 -or $r.Codigo -eq 403 -or $r.Codigo -eq -1) { Parar 'A Central não aceitou o acesso desta máquina. Fale com o Cadu.' }
+  if ($r.Codigo -eq 429) { Parar 'Muitas tentativas. Espere uma hora e rode o comando de novo.' }
+  Parar "Não consegui falar com a Central (código $($r.Codigo)). Tente de novo em alguns minutos."
+}
+
+# Passo 3: assinatura e campos, antes de baixar. Só daqui saem os dados usados no download.
+function Conferir-Manifesto($resposta) {
+  $script:I.M = $null
+  if (-not (Eh-Objeto $resposta) -or -not $resposta.Contains('manifesto')) { Parar $script:I.FraseFalha }
+  $m = $resposta['manifesto']
+  $v = Tsa-VerificarArvore $m (Chaves-Confiaveis)
+  if (-not ($v -is [hashtable]) -or $v['ok'] -isnot [bool] -or $v['ok'] -ne $true) { Parar $script:I.FraseFalha }
+  if ($m['plataforma'] -cne 'win32' -or $m['arquitetura'] -cne 'x64' -or $m['app_id'] -cne $script:I.AppId) { Parar $script:I.FraseFalha }
+  $script:I.M = @{
+    BuildId = [string]$m['build_id']
+    Sha = [string]$m['artefato']['sha256']
+    Bytes = [long]$m['artefato']['bytes']
+    Versao = [string]$m['versao']
+  }
+  Feito "Assinatura da versão $($script:I.M.Versao) conferida"
+}
+
+# Passo 4: baixa para a pasta temporária, com retomada por Range. Resposta de erro apaga o
+# parcial (o corpo do erro não pode virar começo do instalador).
+function Baixar-Artefato {
+  $m = $script:I.M
+  if ($null -eq $m) { Parar $script:I.FraseFalha }
+  $destino = Join-Path $script:I.Tmp 'tsa-windows-x64.exe'
+  if ($script:I.Caso -ceq 'A') { $url = $script:I.PainelApi + '/artefatos/' + $m.Sha; $segredo = 'cabecalho-convite' }
+  else { $url = $script:I.Api + '/v1/app/artefatos/' + $m.Sha; $segredo = 'cabecalho-credencial' }
+  Dizer "Baixando o TSA $($m.Versao)..."
+  for ($tentativa = 1; $tentativa -le 5; $tentativa++) {
+    $ja = [long]0
+    if ([System.IO.File]::Exists($destino)) { $ja = (New-Object System.IO.FileInfo $destino).Length }
+    if ($ja -gt $m.Bytes) { [System.IO.File]::Delete($destino); $ja = [long]0 }
+    if ($ja -gt 0 -and $ja -eq $m.Bytes) { break }
+    $r = Http-Pedir -Metodo 'GET' -Url $url -Segredo $segredo -Destino $destino -Desde $ja -Limite $m.Bytes
+    if (($r.Codigo -eq 200 -or $r.Codigo -eq 206) -and $r.Completo) { break }
+    if ($r.Codigo -ne 200 -and $r.Codigo -ne 206 -and $r.Codigo -ne 0) {
+      if ([System.IO.File]::Exists($destino)) { [System.IO.File]::Delete($destino) }
+    }
+    if ($tentativa -eq 5) {
+      if ([System.IO.File]::Exists($destino)) { [System.IO.File]::Delete($destino) }
+      Parar "O download não terminou (código $($r.Codigo)). Tente de novo em alguns minutos."
+    }
+    Start-Sleep -Seconds $script:I.EsperaDownloadS
+  }
+  return $destino
+}
+
+# Seção 5.4, item 1, caminho sem desvio: nem o arquivo nem pasta acima dele, até %LOCALAPPDATA%,
+# pode ser ponto de nova análise (junção ou atalho de pasta).
+function Caminho-Sem-Desvio([string]$caminho) {
+  try {
+    $raiz = [System.IO.Path]::GetFullPath($script:I.Local).TrimEnd('\')
+    $atual = [System.IO.Path]::GetFullPath($caminho)
+    if (-not $atual.StartsWith($raiz + '\', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    while ($atual.Length -gt $raiz.Length) {
+      $atributos = [System.IO.File]::GetAttributes($atual)
+      if (($atributos -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+      $atual = [System.IO.Path]::GetDirectoryName($atual)
+      if (-not $atual) { return $false }
+    }
+    return [string]::Equals($atual, $raiz, [StringComparison]::OrdinalIgnoreCase)
+  } catch { return $false }
+}
+
+# Passo 5 e seção 5.4, item 1: confere o caminho, abre o arquivo só para leitura, com
+# compartilhamento só de leitura (ninguém escreve, apaga nem troca o nome enquanto o identificador
+# existir), confere tamanho e SHA-256 por esse identificador, pede ao sistema o caminho final dele
+# e exige o caminho esperado dentro de $TSAL. Devolve o identificador aberto; quem chama o segura
+# até o instalador terminar. Devolve $null, com o arquivo fechado, se algo não confere.
+function Abrir-Conferido([string]$caminho, [long]$bytes, [string]$sha) {
+  if ((Caminho-Sem-Desvio $caminho) -ne $true) { return $null }
+  try { Unblock-File -LiteralPath $caminho -ErrorAction Stop } catch { }
+  $fs = $null
+  $confere = $false
+  try {
+    $fs = [System.IO.File]::Open($caminho, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    # O caminho esperado parte do caminho final de %LOCALAPPDATA% (o perfil pode estar atrás de
+    # uma junção do próprio Windows); daí para baixo não pode haver diferença.
+    $final = [TsaNativo1]::CaminhoFinal($fs.SafeFileHandle)
+    $raizFinal = [TsaNativo1]::CaminhoFinalDaPasta($script:I.Local)
+    $relativo = [System.IO.Path]::GetFullPath($caminho).Substring([System.IO.Path]::GetFullPath($script:I.Local).TrimEnd('\').Length)
+    $dentro = [System.IO.Path]::GetFullPath($caminho).StartsWith([System.IO.Path]::GetFullPath($script:I.Tsal).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+    if ($dentro -and $final -is [string] -and $raizFinal -is [string] -and
+      [string]::Equals($final, ($raizFinal.TrimEnd('\') + $relativo), [StringComparison]::OrdinalIgnoreCase) -and $fs.Length -eq $bytes) {
+      $h = New-Object System.Security.Cryptography.SHA256CryptoServiceProvider
+      try { $hex = ([BitConverter]::ToString($h.ComputeHash($fs)) -replace '-', '').ToLowerInvariant() } finally { $h.Dispose() }
+      $confere = ($sha -cmatch '\A[0-9a-f]{64}\z' -and $hex -ceq $sha)
+    }
+  } catch { $confere = $false }
+  if ($confere -ne $true) {
+    if ($null -ne $fs) { try { $fs.Dispose() } catch { } }
+    return $null
+  }
+  return $fs
+}
+
+function Fechar-Exe {
+  if ($null -ne $script:I.ExeAberto) { try { $script:I.ExeAberto.Dispose() } catch { }; $script:I.ExeAberto = $null }
+}
+
+function Ler-BuildInstalado {
+  try { $o = Ler-JsonArquivo (Join-Path $script:I.App 'resources\tsa\tsa-version.json') } catch { return '' }
+  $b = Campo-Texto $o 'build_id'
+  if ($null -eq $b) { return '' }
+  return $b
+}
+
+# ---------------------------------------------------------------- instalação (passo 7)
+# Só roda quando não tem TSA (casos A e C). $exe é o arquivo que $script:I.ExeAberto mantém aberto.
+function Instalar([string]$exe) {
+  $m = $script:I.M
+  if ($null -eq $m -or $null -eq $script:I.ExeAberto) { Parar $script:I.FraseFalha }
+  # (a) Reconsulta: a release ainda é a mesma (pausa ou troca no meio do download para aqui).
+  $de_novo = Pedir-Manifesto
+  $m2 = $null
+  if ((Eh-Objeto $de_novo) -and $de_novo.Contains('manifesto')) { $m2 = $de_novo['manifesto'] }
+  $build2 = Campo-Texto $m2 'build_id'
+  $sha2 = $null
+  if ((Eh-Objeto $m2) -and $m2.Contains('artefato')) { $sha2 = Campo-Texto $m2['artefato'] 'sha256' }
+  if ($null -eq $build2 -or $null -eq $sha2 -or $build2 -cne $m.BuildId -or $sha2 -cne $m.Sha) {
+    Parar 'A versão mudou durante o download. Rode o comando de novo.'
+  }
+  # (b) Trava.
+  if (-not (Pegar-Trava)) { Parar 'Há outra atualização em andamento. Espere terminar e rode o comando de novo.' }
+  # (c) Reclassifica dentro da trava: outro instalador pode ter terminado enquanto este baixava.
+  if ((Ler-Troca) -ceq 'objeto' -or [System.IO.File]::Exists($script:I.Primeira) -or (Classificar) -cne $script:I.Caso) {
+    Soltar-Trava
+    Parar 'O TSA já foi instalado neste computador. Abra o TSA.'
+  }
+  # (d) Marca: a partir daqui, o que estiver em $APP foi posto por este script.
+  Gravar-Atomico $script:I.Primeira ('{ "schema": "tsa.instalacao.primeira/v1", "sha256": "' + $m.Sha + '", "iniciada_em": "' + (Hora-Agora) + '" }' + "`n")
+  Dizer 'Instalando...'
+  $certo = $false
+  try {
+    # (e) Instalador NSIS em modo silencioso; /D= é o último argumento, sem aspas.
+    $r = [TsaNativo1]::Executar($exe, ('/S /D=' + $script:I.App), $script:I.InstaladorS * 1000)
+    if ($r[0] -eq 0 -and $r[1] -eq 0 -and [System.IO.File]::Exists($script:I.AppExe)) {
+      # (f) O que foi instalado é a build do manifesto.
+      $certo = ((Ler-BuildInstalado) -ceq $m.BuildId)
+    }
+  } catch { $certo = $false }
+  Fechar-Exe
+  if ($certo -ne $true) {
+    [void](Desfazer-Primeira)
+    Soltar-Trava
+    Parar $script:I.FraseFalha
+  }
+  # (g)
+  [System.IO.File]::Delete($script:I.Primeira)
+  Soltar-Trava
+  Feito "TSA $($m.Versao) instalado"
+}
+
+# ---------------------------------------------------------------- perfil, agendador, convite
+function Gravar-Perfil {
+  if ($script:I.Caso -ceq 'C' -and [System.IO.File]::Exists($script:I.PerfilJson)) { return }
+  if (-not $script:I.Perfil) { Perguntar-Setor }
+  Gravar-Atomico $script:I.PerfilJson ('{ "perfil": "' + $script:I.Perfil + '" }' + "`n")
+}
+
+function Marca-Agendador {
+  if ($script:I.SemAgendador) {
+    [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($script:I.SemAgendadorMarca))
+    if (-not [System.IO.File]::Exists($script:I.SemAgendadorMarca)) { [System.IO.File]::WriteAllBytes($script:I.SemAgendadorMarca, (New-Object 'byte[]' 0)) }
+  } elseif ([System.IO.File]::Exists($script:I.SemAgendadorMarca)) {
+    [System.IO.File]::Delete($script:I.SemAgendadorMarca)
+  }
+}
+
+# Passo 9: o convite vai ao Gerenciador de Credenciais pela API (CredWriteW), nunca pelo cmdkey.
+function Entregar-Convite {
+  try { [TsaNativo1]::CredGravar('tsa-convite-pendente', 'convite', $script:I.Convite) }
+  catch { Parar 'Não consegui guardar o convite no Gerenciador de Credenciais. Fale com o Cadu.' }
+  $script:I.Convite.Dispose()
+  $script:I.Convite = $null
+}
+
+# ---------------------------------------------------------------- casos
+function Caso-B1 {
+  Marca-Agendador
+  if (-not [System.IO.File]::Exists($script:I.Atualizador)) { Parar 'Abra o TSA uma vez e rode este comando de novo.' }
+  Dizer 'O TSA já está instalado e cadastrado. Procurando atualização...'
+  # Só vale o resumo gravado por esta execução: o mesmo arquivo de antes é resultado velho.
+  $antes = Assinatura-Resumo
+  $rc = 1
+  try { $rc = Rodar-Atualizador '-Agora' } catch { $rc = 1 }
+  if ($rc -ne 0) { Parar "O atualizador parou com erro ($rc). Fale com o Cadu." }
+  $depois = Assinatura-Resumo
+  if ($depois -ceq '' -or $depois -ceq $antes) { Parar 'O atualizador não deixou o resultado desta execução. Fale com o Cadu.' }
+  $estado = 'desconhecido'
+  try {
+    $o = ConvertFrom-Json ([System.IO.File]::ReadAllText($script:I.Resumo, [System.Text.Encoding]::UTF8))
+    $p = $o.PSObject.Properties['estado']
+    if ($null -ne $p -and $p.Value -is [string] -and $p.Value -cmatch '\A[a-z_]{1,40}\z') { $estado = $p.Value }
+  } catch { $estado = 'desconhecido' }
+  Write-Host "Resultado: $estado"
+}
+
+function Assinatura-Resumo {
+  try {
+    if (-not [System.IO.File]::Exists($script:I.Resumo)) { return '' }
+    $f = New-Object System.IO.FileInfo $script:I.Resumo
+    return ($f.LastWriteTimeUtc.Ticks.ToString() + ' ' + $f.Length + ' ' + (Tsa-Sha256Hex ([System.IO.File]::ReadAllBytes($script:I.Resumo))))
+  } catch { return '' }
+}
+
+# Passo 10. atalho: as ferramentas vêm do instalador de hoje (TSA_ONLY_PREREQS=1, mesma fonte do
+# comando do GitHub), como no install.sh. Teto: não há grupo por perfil. Saída: a WO-30 junta os dois.
+function Ferramentas {
+  if ($script:I.PularFerramentas) { return }
+  Dizer 'Preparando as ferramentas...'
+  $arquivo = Join-Path $script:I.Tmp 'prereqs.ps1'
+  $r = Http-Pedir -Metodo 'GET' -Url $script:I.PrereqsUrl -Destino $arquivo
+  if ($r.Codigo -ne 200 -or -not $r.Completo) {
+    Write-Host 'Não consegui baixar o preparo das ferramentas. Rode depois:'
+    Write-Host ('  $env:TSA_ONLY_PREREQS=1; irm ' + $script:I.PrereqsUrl + ' | iex')
+    return
+  }
+  $antes = $env:TSA_ONLY_PREREQS
+  try {
+    $env:TSA_ONLY_PREREQS = '1'
+    & (Caminho-PowerShell) -NoProfile -ExecutionPolicy Bypass -File $arquivo | Out-Host
+  } catch { }
+  finally { $env:TSA_ONLY_PREREQS = $antes }
+}
+
+function Abrir-Tsa {
+  try { Start-Process -FilePath $script:I.AppExe } catch { }
+}
+
+function Criar-Tmp {
+  $script:I.Tmp = Join-Path $script:I.TmpRaiz ([guid]::NewGuid().ToString('N'))
+  [void][System.IO.Directory]::CreateDirectory($script:I.Tmp)
+}
+
+function Instalar-Novo {
+  # Passo 1.
+  Conferir-ControleInteligente
+  if ($script:I.Caso -ceq 'A') {
+    Pedir-Convite
+    Perguntar-Setor
+  } else {
+    Dizer 'TSA cadastrado e sem o app: reinstalando.'
+    if (-not [System.IO.File]::Exists($script:I.PerfilJson)) { Perguntar-Setor }
+  }
+  Write-Host "O instalador do TSA não mostra a tela azul 'O Windows protegeu o computador'. Se ela aparecer, não clique em 'Executar assim mesmo': feche e fale com o Cadu."
+  Criar-Tmp
+  # Passos 2 e 3.
+  Conferir-Manifesto (Pedir-Manifesto)
+  # Passos 4 e 5.
+  $exe = Baixar-Artefato
+  Dizer 'Conferindo o arquivo...'
+  $script:I.ExeAberto = Abrir-Conferido $exe $script:I.M.Bytes $script:I.M.Sha
+  if ($null -eq $script:I.ExeAberto) {
+    try { [System.IO.File]::Delete($exe) } catch { }
+    Parar $script:I.FraseFalha
+  }
+  Feito 'Tamanho e SHA-256 conferidos'
+  # Passos 7 a 10.
+  Instalar $exe
+  Gravar-Perfil
+  Marca-Agendador
+  if ($script:I.Caso -ceq 'A') { Entregar-Convite }
+  Ferramentas
+  Abrir-Tsa
+  Write-Host ''
+  if ($script:I.Caso -ceq 'A') { Write-Host 'O TSA vai abrir e terminar o cadastro sozinho.' }
+  else { Write-Host 'O TSA foi reinstalado e vai abrir.' }
+}
+
+function Limpar {
+  if (-not (Get-Variable -Name I -Scope Script -ErrorAction SilentlyContinue)) { return }
+  if ($null -ne $script:I.Convite) { try { $script:I.Convite.Dispose() } catch { }; $script:I.Convite = $null }
+  Fechar-Exe
+  Soltar-Trava
+  if ($script:I.Tmp) {
+    try { if ([System.IO.Directory]::Exists($script:I.Tmp)) { [System.IO.Directory]::Delete($script:I.Tmp, $true) } } catch { }
+    try { if ([System.IO.Directory]::Exists($script:I.TmpRaiz) -and @([System.IO.Directory]::GetFileSystemEntries($script:I.TmpRaiz)).Count -eq 0) { [System.IO.Directory]::Delete($script:I.TmpRaiz) } } catch { }
+  }
+}
+
+# Recusas, recuperações e o caso. O resultado fica em $script:I.Rc (0 só quando terminou bem).
+function Rodar-Casos {
+  Conferir-Ambiente
+  Carregar-Nativo
+  # A classificação recomeça do zero quando outra execução termina enquanto esta espera a trava.
+  for ($volta = 1; $true; $volta++) {
+    Retomar-Troca
+    if ((Recuperar-Primeira) -ne $true) { break }
+    if ($volta -ge 3) { Parar 'Há outra instalação em andamento. Espere terminar e rode o comando de novo.' }
+  }
+  $script:I.Caso = Classificar
+  if ($script:I.Caso -ceq 'B1') { Caso-B1; $script:I.Rc = 0; return }
+  if ($script:I.Caso -ceq 'B2') {
+    Write-Host 'Este computador já tem o TSA. Abra o TSA: ele termina o cadastro e passa a se atualizar sozinho.'
+    $script:I.Rc = 0
+    return
+  }
+  if ($script:I.Caso -ceq 'D') {
+    Write-Host 'Este computador tem um TSA instalado fora do lugar padrão. Fale com o Cadu.'
+    return
+  }
+  if ($script:I.Caso -cne 'A' -and $script:I.Caso -cne 'C') { Parar 'Não consegui entender o estado deste computador. Fale com o Cadu.' }
+  Instalar-Novo
+  $script:I.Rc = 0
+}
+
+function Main {
+  param([string]$Perfil = '', [bool]$SemAgendador = $false)
+  # Antes de tudo: num PowerShell restrito, nem a linha do TLS roda.
+  if ([string]$ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    Write-Host 'Este computador restringe o PowerShell. Fale com o Cadu.'
+    $global:LASTEXITCODE = 1
+    return
+  }
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  $ErrorActionPreference = 'Stop'
+  Set-StrictMode -Version 2.0
+  try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
+  $script:I = Novo-Estado
+  $rc = 1
+  try {
+    if ($Perfil) {
+      if ($script:I.Perfis -cnotcontains $Perfil) { Parar ('-Perfil aceita: ' + ($script:I.Perfis -join ', ')) }
+      $script:I.Perfil = $Perfil
+    }
+    $script:I.SemAgendador = $SemAgendador
+    Rodar-Casos | Out-Null
+    if ($script:I.Rc -is [int] -and $script:I.Rc -eq 0) { $rc = 0 }
+  } catch {
+    $rc = 1
+    if ($script:I.Parada) { Write-Host $script:I.Parada -ForegroundColor Red }
+    else {
+      Write-Host ('Erro inesperado: ' + $_.Exception.Message) -ForegroundColor Red
+      Write-Host 'Fale com o Cadu.' -ForegroundColor Red
+    }
+  } finally {
+    Limpar
+  }
+  $global:LASTEXITCODE = $rc
+}
+
+Main -Perfil $Perfil -SemAgendador ([bool]$SemAgendador)
