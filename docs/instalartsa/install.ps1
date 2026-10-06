@@ -1,4 +1,4 @@
-# Instalador do TSA pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.2, seções 4, 5 e 6.
+# Instalador do TSA pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.4, seções 4, 5 e 6.
 #   irm https://ace.caduneiva.com/apptsa/install.ps1 | iex
 # O comando é o mesmo para todos: o convite é pedido aqui, sem aparecer, e nunca entra no comando.
 # Casos (seção 5.3):
@@ -839,11 +839,11 @@ function Mesma-Pasta([string]$a, [string]$b) {
 #   cabecalho-convite     X-TSA-Convite
 #   cabecalho-credencial  Authorization: Bearer <credencial de atualização>
 # Sem redirecionamento: um cabeçalho com segredo não segue para outro endereço.
-# Devolve @{ Codigo; Texto; Completo }. Codigo 0 = sem resposta; -1 = credencial ilegível.
+# Devolve @{ Codigo; Texto; Bytes; Completo }. Codigo 0 = sem resposta; -1 = credencial ilegível.
 function Http-Pedir {
   param([string]$Metodo, [string]$Url, [string]$Segredo = '', [string]$Extra = '', [string]$Destino = '',
     [long]$Desde = 0, [long]$Limite = 0)
-  $r = @{ Codigo = 0; Texto = ''; Completo = $false }
+  $r = @{ Codigo = 0; Texto = ''; Bytes = $null; Completo = $false }
   $resp = $null
   try {
     $req = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Url)
@@ -893,7 +893,10 @@ function Http-Pedir {
         if ($n -le 0) { $r.Completo = $true; break }
         $mem.Write($buf, 0, $n)
       }
-      if ($r.Completo) { $r.Texto = (New-Object System.Text.UTF8Encoding $false, $true).GetString($mem.ToArray()) }
+      if ($r.Completo) {
+        $r.Bytes = $mem.ToArray()
+        try { $r.Texto = (New-Object System.Text.UTF8Encoding $false, $true).GetString($r.Bytes) } catch { $r.Texto = '' }
+      }
     }
   } catch {
     $r.Completo = $false
@@ -998,39 +1001,45 @@ function Retomar-Troca {
 
 # Seção 5.4, item 4: instalador que sobrou. Só roda com a trava na mão: aí não existe outro script
 # coordenando, e processo com executável em baixado\, em tmp\ ou igual ao desinstalador é órfão.
-# Encerra cada um com os filhos e espera até 30 s. Devolve $true só se não sobrou nenhum.
-# Sem a lista de processos, conta como "sobrou": não mexe em nada.
-function Achar-Sobras {
-  $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
-  $pastas = @(($script:I.Baixado.TrimEnd('\') + '\'), ($script:I.TmpRaiz.TrimEnd('\') + '\'))
-  $raizes = New-Object System.Collections.Generic.List[int]
-  foreach ($p in $procs) {
-    $exe = [string]$p.ExecutablePath
-    if (-not $exe) { continue }
-    $eh = [string]::Equals($exe, $script:I.Desinstalador, [StringComparison]::OrdinalIgnoreCase)
-    foreach ($pasta in $pastas) { if ($exe.StartsWith($pasta, [StringComparison]::OrdinalIgnoreCase)) { $eh = $true } }
-    if ($eh) { $raizes.Add([int]$p.ProcessId) }
-  }
-  # Filhos, netos e assim por diante.
-  $todos = New-Object System.Collections.Generic.List[int]
-  $fila = New-Object System.Collections.Queue
-  foreach ($r in $raizes) { $fila.Enqueue($r) }
-  while ($fila.Count -gt 0) {
-    $id = [int]$fila.Dequeue()
-    if ($todos.Contains($id) -or $id -eq $PID) { continue }
-    $todos.Add($id)
-    foreach ($p in $procs) { if ([int]$p.ParentProcessId -eq $id) { $fila.Enqueue([int]$p.ProcessId) } }
-  }
-  return , @{ Raizes = $raizes.Count; Todos = $todos }
-}
+# Encerra cada um com os filhos e espera até 30 s. Devolve $true só depois de ver toda a árvore
+# fora da lista de processos. Sem a lista, ou passado o prazo, conta como "sobrou": não mexe em nada.
 function Encerrar-Sobras {
   if ($null -eq $script:I.TravaAberta) { return $false }
+  $pastas = @(($script:I.Baixado.TrimEnd('\') + '\'), ($script:I.TmpRaiz.TrimEnd('\') + '\'))
+  # Todo processo achado fica na lista até sumir: identidade = número e hora de criação.
+  $seguidos = New-Object 'System.Collections.Generic.Dictionary[string,int]'
   $fim = [DateTime]::UtcNow.AddSeconds($script:I.SobraS)
   while ($true) {
-    try { $a = Achar-Sobras } catch { return $false }
-    if ($a.Raizes -eq 0) { return $true }
+    try { $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop) } catch { return $false }
+    $vivos = New-Object 'System.Collections.Generic.Dictionary[int,string]'
+    foreach ($p in $procs) { $vivos[[int]$p.ProcessId] = ([string][int]$p.ProcessId + '@' + [string]$p.CreationDate) }
+    $fila = New-Object System.Collections.Queue
+    foreach ($p in $procs) {
+      $exe = [string]$p.ExecutablePath
+      $eh = $false
+      if ($exe) {
+        $eh = [string]::Equals($exe, $script:I.Desinstalador, [StringComparison]::OrdinalIgnoreCase)
+        foreach ($pasta in $pastas) { if ($exe.StartsWith($pasta, [StringComparison]::OrdinalIgnoreCase)) { $eh = $true } }
+      }
+      if ($eh -or $seguidos.ContainsKey($vivos[[int]$p.ProcessId])) { $fila.Enqueue([int]$p.ProcessId) }
+    }
+    # Filhos, netos e assim por diante entram na lista.
+    $visto = New-Object 'System.Collections.Generic.HashSet[int]'
+    while ($fila.Count -gt 0) {
+      $id = [int]$fila.Dequeue()
+      if ($id -eq $PID -or -not $visto.Add($id)) { continue }
+      $seguidos[$vivos[$id]] = $id
+      foreach ($p in $procs) { if ([int]$p.ParentProcessId -eq $id) { $fila.Enqueue([int]$p.ProcessId) } }
+    }
+    $restam = 0
+    foreach ($par in @($seguidos.GetEnumerator())) {
+      if ($vivos.ContainsKey($par.Value) -and $vivos[$par.Value] -ceq $par.Key) {
+        $restam++
+        try { Stop-Process -Id $par.Value -Force -ErrorAction Stop } catch { }
+      }
+    }
+    if ($restam -eq 0) { return $true }
     if ([DateTime]::UtcNow -ge $fim) { return $false }
-    foreach ($id in $a.Todos) { try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { } }
     Start-Sleep -Milliseconds 500
   }
 }
@@ -1042,7 +1051,12 @@ function Encerrar-Sobras {
 function Desfazer-Primeira {
   if ((Encerrar-Sobras) -ne $true) { return $false }
   if ([System.IO.File]::Exists($script:I.Desinstalador)) {
-    try { [void][TsaNativo1]::Executar($script:I.Desinstalador, ('/S _?=' + $script:I.App), $script:I.DesinstaladorS * 1000) } catch { }
+    # O conteúdo do desinstalador não tem referência para conferir (o contrato manda rodá-lo); o
+    # que se garante é o caminho: sem junção, dentro de $APP, preso contra troca enquanto roda.
+    $preso = Abrir-Protegido $script:I.Desinstalador $script:I.App
+    if ($null -eq $preso) { return $false }
+    try { [void][TsaNativo1]::Executar($preso.Final, ('/S _?=' + $script:I.App), $script:I.DesinstaladorS * 1000) } catch { }
+    finally { $preso.Fluxo.Dispose() }
   }
   try {
     if ([System.IO.Directory]::Exists($script:I.App)) { [System.IO.Directory]::Delete($script:I.App, $true) }
@@ -1052,22 +1066,31 @@ function Desfazer-Primeira {
   return (-not [System.IO.File]::Exists($script:I.Primeira))
 }
 
-# Identidade da marca de primeira instalação: sha256 e iniciada_em. '' se não existe ou não lê.
+# Identidade da marca de primeira instalação: sha256 e iniciada_em. '' se não existe; 'invalida' se
+# não lê ou não está no formato (marca inválida nunca autoriza apagar nada).
 function Ler-Marca {
   if (-not [System.IO.File]::Exists($script:I.Primeira)) { return '' }
-  try { $o = Ler-JsonArquivo $script:I.Primeira } catch { return 'ilegivel' }
-  return ([string](Campo-Texto $o 'sha256') + '|' + [string](Campo-Texto $o 'iniciada_em'))
+  try { $o = Ler-JsonArquivo $script:I.Primeira } catch { return 'invalida' }
+  $sha = Campo-Texto $o 'sha256'
+  $hora = Campo-Texto $o 'iniciada_em'
+  if ((Campo-Texto $o 'schema') -cne 'tsa.instalacao.primeira/v1' -or $o.get_Count() -ne 3) { return 'invalida' }
+  if ($null -eq $sha -or $sha -cnotmatch '\A[0-9a-f]{64}\z') { return 'invalida' }
+  if ($null -eq $hora -or $hora -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') { return 'invalida' }
+  return ($sha + '|' + $hora)
 }
 
 # Antes de classificar, item 2: primeira instalação interrompida. Devolve $true quando a outra
 # execução terminou enquanto esta esperava a trava: nada é apagado e a classificação recomeça.
 function Recuperar-Primeira {
-  if (-not [System.IO.File]::Exists($script:I.Primeira)) { return $false }
   $antes = Ler-Marca
+  if ($antes -ceq '') { return $false }
+  if ($antes -ceq 'invalida') { Parar 'Há uma instalação interrompida que não consegui ler. Nada foi apagado. Fale com o Cadu.' }
   if (-not (Pegar-Trava)) { Parar 'Há outra instalação em andamento. Espere terminar e rode o comando de novo.' }
   try {
     # Com a trava na mão, lê de novo: a marca tem de ser a mesma, e não pode haver troca.
-    if (-not [System.IO.File]::Exists($script:I.Primeira) -or (Ler-Marca) -cne $antes -or (Ler-Troca) -ceq 'objeto') { return $true }
+    $troca = Ler-Troca
+    if ((Ler-Marca) -cne $antes -or $troca -ceq 'objeto') { return $true }
+    if ($troca -cne 'ausente' -and $troca -cne 'null') { Parar 'Há uma atualização interrompida. Fale com o Cadu.' }
     Dizer 'Uma instalação anterior parou no meio. Limpando...'
     if ((Desfazer-Primeira) -ne $true) {
       Parar 'Não consegui limpar a instalação que parou no meio. Espere um minuto e rode o comando de novo. Se repetir, fale com o Cadu.'
@@ -1268,57 +1291,69 @@ function Baixar-Artefato {
   return $destino
 }
 
-# Seção 5.4, item 1, caminho sem desvio: nem o arquivo nem pasta acima dele, até %LOCALAPPDATA%,
-# pode ser ponto de nova análise (junção ou atalho de pasta).
-function Caminho-Sem-Desvio([string]$caminho) {
+# Seção 5.4, item 1, caminho sem desvio. Abre o arquivo só para leitura, com compartilhamento só
+# de leitura (ninguém escreve, apaga nem troca o nome enquanto o identificador existir), e exige:
+# - nem o arquivo nem pasta acima dele, até %LOCALAPPDATA% inclusive, é ponto de nova análise
+#   (junção ou atalho de pasta);
+# - o arquivo fica dentro de $base;
+# - o caminho final que o sistema dá para o identificador é o esperado. A conta parte do caminho
+#   final de %LOCALAPPDATA% (nome curto ou unidade mapeada não reprovam); daí para baixo não pode
+#   haver diferença.
+# Devolve @{ Fluxo; Final }: o identificador aberto e o caminho final, por onde o arquivo é
+# executado. Devolve $null, com o arquivo fechado, se algo não confere.
+function Abrir-Protegido([string]$caminho, [string]$base) {
+  $fs = $null
   try {
     $raiz = [System.IO.Path]::GetFullPath($script:I.Local).TrimEnd('\')
-    $atual = [System.IO.Path]::GetFullPath($caminho)
-    if (-not $atual.StartsWith($raiz + '\', [StringComparison]::OrdinalIgnoreCase)) { return $false }
-    while ($atual.Length -gt $raiz.Length) {
-      $atributos = [System.IO.File]::GetAttributes($atual)
-      if (($atributos -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    $cheio = [System.IO.Path]::GetFullPath($caminho)
+    $dentro = [System.IO.Path]::GetFullPath($base).TrimEnd('\') + '\'
+    if (-not $cheio.StartsWith($raiz + '\', [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    if (-not $cheio.StartsWith($dentro, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    $atual = $cheio
+    while ($true) {
+      if (([System.IO.File]::GetAttributes($atual) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
+      if ($atual.Length -le $raiz.Length) { break }
       $atual = [System.IO.Path]::GetDirectoryName($atual)
-      if (-not $atual) { return $false }
+      if (-not $atual) { return $null }
     }
-    return [string]::Equals($atual, $raiz, [StringComparison]::OrdinalIgnoreCase)
-  } catch { return $false }
+    if (-not [string]::Equals($atual, $raiz, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    $fs = [System.IO.File]::Open($cheio, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    $final = [TsaNativo1]::CaminhoFinal($fs.SafeFileHandle)
+    $raizFinal = [TsaNativo1]::CaminhoFinalDaPasta($raiz)
+    if ($final -is [string] -and $raizFinal -is [string] -and
+      [string]::Equals($final, ($raizFinal.TrimEnd('\') + $cheio.Substring($raiz.Length)), [StringComparison]::OrdinalIgnoreCase)) {
+      if ($final.StartsWith('\\?\') -and -not $final.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { $final = $final.Substring(4) }
+      return @{ Fluxo = $fs; Final = $final }
+    }
+  } catch { }
+  if ($null -ne $fs) { try { $fs.Dispose() } catch { } }
+  return $null
 }
 
-# Passo 5 e seção 5.4, item 1: confere o caminho, abre o arquivo só para leitura, com
-# compartilhamento só de leitura (ninguém escreve, apaga nem troca o nome enquanto o identificador
-# existir), confere tamanho e SHA-256 por esse identificador, pede ao sistema o caminho final dele
-# e exige o caminho esperado dentro de $TSAL. Devolve o identificador aberto; quem chama o segura
-# até o instalador terminar. Devolve $null, com o arquivo fechado, se algo não confere.
-function Abrir-Conferido([string]$caminho, [long]$bytes, [string]$sha) {
-  if ((Caminho-Sem-Desvio $caminho) -ne $true) { return $null }
+# Passo 5: confere tamanho e SHA-256 pelo identificador que fica aberto até o fim. Devolve o mesmo
+# que Abrir-Protegido, ou $null, com o arquivo fechado, se não confere.
+function Abrir-Conferido([string]$caminho, [long]$bytes, [string]$sha, [string]$base = '') {
+  if (-not $base) { $base = $script:I.Tsal }
   try { Unblock-File -LiteralPath $caminho -ErrorAction Stop } catch { }
-  $fs = $null
+  $a = Abrir-Protegido $caminho $base
+  if ($null -eq $a) { return $null }
   $confere = $false
   try {
-    $fs = [System.IO.File]::Open($caminho, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
-    # O caminho esperado parte do caminho final de %LOCALAPPDATA% (o perfil pode estar atrás de
-    # uma junção do próprio Windows); daí para baixo não pode haver diferença.
-    $final = [TsaNativo1]::CaminhoFinal($fs.SafeFileHandle)
-    $raizFinal = [TsaNativo1]::CaminhoFinalDaPasta($script:I.Local)
-    $relativo = [System.IO.Path]::GetFullPath($caminho).Substring([System.IO.Path]::GetFullPath($script:I.Local).TrimEnd('\').Length)
-    $dentro = [System.IO.Path]::GetFullPath($caminho).StartsWith([System.IO.Path]::GetFullPath($script:I.Tsal).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
-    if ($dentro -and $final -is [string] -and $raizFinal -is [string] -and
-      [string]::Equals($final, ($raizFinal.TrimEnd('\') + $relativo), [StringComparison]::OrdinalIgnoreCase) -and $fs.Length -eq $bytes) {
+    if ($a.Fluxo.Length -eq $bytes) {
       $h = New-Object System.Security.Cryptography.SHA256CryptoServiceProvider
-      try { $hex = ([BitConverter]::ToString($h.ComputeHash($fs)) -replace '-', '').ToLowerInvariant() } finally { $h.Dispose() }
+      try { $hex = ([BitConverter]::ToString($h.ComputeHash($a.Fluxo)) -replace '-', '').ToLowerInvariant() } finally { $h.Dispose() }
       $confere = ($sha -cmatch '\A[0-9a-f]{64}\z' -and $hex -ceq $sha)
     }
   } catch { $confere = $false }
   if ($confere -ne $true) {
-    if ($null -ne $fs) { try { $fs.Dispose() } catch { } }
+    try { $a.Fluxo.Dispose() } catch { }
     return $null
   }
-  return $fs
+  return $a
 }
 
 function Fechar-Exe {
-  if ($null -ne $script:I.ExeAberto) { try { $script:I.ExeAberto.Dispose() } catch { }; $script:I.ExeAberto = $null }
+  if ($null -ne $script:I.ExeAberto) { try { $script:I.ExeAberto.Fluxo.Dispose() } catch { }; $script:I.ExeAberto = $null }
 }
 
 function Ler-BuildInstalado {
@@ -1329,8 +1364,9 @@ function Ler-BuildInstalado {
 }
 
 # ---------------------------------------------------------------- instalação (passo 7)
-# Só roda quando não tem TSA (casos A e C). $exe é o arquivo que $script:I.ExeAberto mantém aberto.
-function Instalar([string]$exe) {
+# Só roda quando não tem TSA (casos A e C). Executa o arquivo que $script:I.ExeAberto mantém
+# aberto, pelo caminho final conferido.
+function Instalar {
   $m = $script:I.M
   if ($null -eq $m -or $null -eq $script:I.ExeAberto) { Parar $script:I.FraseFalha }
   # (a) Reconsulta: a release ainda é a mesma (pausa ou troca no meio do download para aqui).
@@ -1346,7 +1382,8 @@ function Instalar([string]$exe) {
   # (b) Trava.
   if (-not (Pegar-Trava)) { Parar 'Há outra atualização em andamento. Espere terminar e rode o comando de novo.' }
   # (c) Reclassifica dentro da trava: outro instalador pode ter terminado enquanto este baixava.
-  if ((Ler-Troca) -ceq 'objeto' -or [System.IO.File]::Exists($script:I.Primeira) -or (Classificar) -cne $script:I.Caso) {
+  $troca = Ler-Troca
+  if (($troca -cne 'ausente' -and $troca -cne 'null') -or [System.IO.File]::Exists($script:I.Primeira) -or (Classificar) -cne $script:I.Caso) {
     Soltar-Trava
     Parar 'O TSA já foi instalado neste computador. Abra o TSA.'
   }
@@ -1356,7 +1393,7 @@ function Instalar([string]$exe) {
   $certo = $false
   try {
     # (e) Instalador NSIS em modo silencioso; /D= é o último argumento, sem aspas.
-    $r = [TsaNativo1]::Executar($exe, ('/S /D=' + $script:I.App), $script:I.InstaladorS * 1000)
+    $r = [TsaNativo1]::Executar($script:I.ExeAberto.Final, ('/S /D=' + $script:I.App), $script:I.InstaladorS * 1000)
     if ($r[0] -eq 0 -and $r[1] -eq 0 -and [System.IO.File]::Exists($script:I.AppExe)) {
       # (f) O que foi instalado é a build do manifesto.
       $certo = ((Ler-BuildInstalado) -ceq $m.BuildId)
@@ -1429,22 +1466,39 @@ function Assinatura-Resumo {
 
 # Passo 10. atalho: as ferramentas vêm do instalador de hoje (TSA_ONLY_PREREQS=1, mesma fonte do
 # comando do GitHub), como no install.sh. Teto: não há grupo por perfil. Saída: a WO-30 junta os dois.
+# O arquivo baixado fica preso contra troca (mesma regra da seção 5.4, item 1) e é conferido contra
+# os bytes recebidos antes de rodar. O instalador de hoje muda a política de execução do usuário;
+# aqui isso não pode (seção 5.1, item 7): no processo filho, Set-ExecutionPolicy não faz nada.
 function Ferramentas {
   if ($script:I.PularFerramentas) { return }
   Dizer 'Preparando as ferramentas...'
-  $arquivo = Join-Path $script:I.Tmp 'prereqs.ps1'
-  $r = Http-Pedir -Metodo 'GET' -Url $script:I.PrereqsUrl -Destino $arquivo
-  if ($r.Codigo -ne 200 -or -not $r.Completo) {
+  $r = Http-Pedir -Metodo 'GET' -Url $script:I.PrereqsUrl
+  $preso = $null
+  if ($r.Codigo -eq 200 -and $r.Completo -and $r.Bytes -is [byte[]] -and $r.Bytes.Length -gt 0) {
+    try {
+      $arquivo = Join-Path $script:I.Tmp 'prereqs.ps1'
+      [System.IO.File]::WriteAllBytes($arquivo, $r.Bytes)
+      $preso = Abrir-Conferido $arquivo ([long]$r.Bytes.Length) (Tsa-Sha256Hex $r.Bytes)
+    } catch { $preso = $null }
+  }
+  if ($null -eq $preso) {
     Write-Host 'Não consegui baixar o preparo das ferramentas. Rode depois:'
     Write-Host ('  $env:TSA_ONLY_PREREQS=1; irm ' + $script:I.PrereqsUrl + ' | iex')
     return
   }
   $antes = $env:TSA_ONLY_PREREQS
+  $antesArquivo = $env:TSA_PREREQS_ARQUIVO
   try {
     $env:TSA_ONLY_PREREQS = '1'
-    & (Caminho-PowerShell) -NoProfile -ExecutionPolicy Bypass -File $arquivo | Out-Host
+    $env:TSA_PREREQS_ARQUIVO = $preso.Final
+    # Texto de comando constante; o caminho vai por variável de ambiente (não é segredo).
+    & (Caminho-PowerShell) -NoProfile -ExecutionPolicy Bypass -Command 'function Set-ExecutionPolicy { }; & $env:TSA_PREREQS_ARQUIVO' | Out-Host
   } catch { }
-  finally { $env:TSA_ONLY_PREREQS = $antes }
+  finally {
+    $env:TSA_ONLY_PREREQS = $antes
+    $env:TSA_PREREQS_ARQUIVO = $antesArquivo
+    try { $preso.Fluxo.Dispose() } catch { }
+  }
 }
 
 function Abrir-Tsa {
@@ -1457,6 +1511,10 @@ function Criar-Tmp {
 }
 
 function Instalar-Novo {
+  # Só instala com o estado do atualizador ausente ou com "troca": null. Estado que não dá para
+  # ler pode esconder uma troca interrompida, e aí a pasta do app está fora do lugar só por isso.
+  $troca = Ler-Troca
+  if ($troca -cne 'ausente' -and $troca -cne 'null') { Parar 'Há uma atualização interrompida. Fale com o Cadu.' }
   # Passo 1.
   Conferir-ControleInteligente
   if ($script:I.Caso -ceq 'A') {
@@ -1480,7 +1538,7 @@ function Instalar-Novo {
   }
   Feito 'Tamanho e SHA-256 conferidos'
   # Passos 7 a 10.
-  Instalar $exe
+  Instalar
   Gravar-Perfil
   Marca-Agendador
   if ($script:I.Caso -ceq 'A') { Entregar-Convite }

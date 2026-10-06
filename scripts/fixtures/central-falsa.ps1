@@ -3,6 +3,7 @@
 #   POST /apptsa/api/convite/validar
 #   POST /apptsa/api/release/nova-instalacao      GET /inteligencia/v1/app/release
 #   GET  /apptsa/api/artefatos/<sha256>           GET /inteligencia/v1/app/artefatos/<sha256>
+#   GET  /prereqs.ps1 (o preparo das ferramentas, quando o teste pede)
 # O que responder vem de <Pasta>\cfg.json, lido a cada pedido. Cada pedido vira uma linha em
 # <Pasta>\log.jsonl. Convite e credencial nunca sao gravados: so o SHA-256 de cada um.
 param([Parameter(Mandatory = $true)][int]$Porta, [Parameter(Mandatory = $true)][string]$Pasta)
@@ -106,6 +107,12 @@ while ($escuta.IsListening) {
       }
       $res.OutputStream.Write($bytes, $inicio, $bytes.Length - $inicio)
       $res.Close()
+      continue
+    }
+    if ($caminho -eq '/prereqs.ps1' -and $cfg.prereqs) {
+      $b = [IO.File]::ReadAllBytes($cfg.prereqs)
+      $res.StatusCode = 200; $res.ContentType = 'text/plain'; $res.ContentLength64 = $b.Length
+      $res.OutputStream.Write($b, 0, $b.Length); $res.Close()
       continue
     }
     Responder $res 404 '{"error":"not_found"}'

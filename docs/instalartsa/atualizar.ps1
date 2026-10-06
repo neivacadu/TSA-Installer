@@ -1,4 +1,4 @@
-# Atualizar o TSA agora pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.2, seção 3.2.
+# Atualizar o TSA agora pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.4, seção 3.2.
 #   irm https://ace.caduneiva.com/apptsa/atualizar.ps1 | iex
 # Invólucro curto: roda a cópia local do atualizador, que o app mantém, com -Agora, pela linha
 # de chamada da seção 7.1. A troca é sempre do atualizador; este arquivo não baixa nem troca nada.

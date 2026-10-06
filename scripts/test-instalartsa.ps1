@@ -1,5 +1,5 @@
 # Testa o instalador do painel para Windows: docs/instalartsa/install.ps1 e atualizar.ps1
-# (INSTALAR-F4-WINDOWS-CONTRATO v1.2, secoes 4, 5 e 6.2). Este arquivo e so ASCII: roda por -File.
+# (INSTALAR-F4-WINDOWS-CONTRATO v1.4, secoes 4, 5 e 6.2). Este arquivo e so ASCII: roda por -File.
 # Os scripts testados tem acento e nao tem BOM; por isso sao lidos como UTF-8 e rodados em memoria,
 # como o irm | iex faz. Nunca rode o install.ps1 por -File.
 #
@@ -86,7 +86,8 @@ if ($Modo -eq 'procurar') {
   if ($Transcricoes -and (Test-Path -LiteralPath $Transcricoes)) {
     foreach ($f in Get-ChildItem -LiteralPath $Transcricoes -Recurse -File) {
       $arquivos++
-      $b = [IO.File]::ReadAllBytes($f.FullName)
+      $fluxo = New-Object System.IO.FileStream ($f.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+      try { $b = New-Object 'byte[]' $fluxo.Length; [void]$fluxo.Read($b, 0, $b.Length) } finally { $fluxo.Dispose() }
       foreach ($s in $segredos) { if (Contem-Segredo $b $s) { $achou++; Write-Host "  SEGREDO em $($f.FullName)" } }
       if (Contem-Segredo $b $marca) { $marcaTranscricao++ }
     }
@@ -226,6 +227,8 @@ function Testar-Verificador {
     Confere "$nome sem BOM e sem CR" (-not ($b[0] -eq 0xEF -and $b[1] -eq 0xBB) -and -not $t.Contains("`r"))
     Confere "$nome declara `$TSA_SCRIPT_VERSAO uma vez, no formato" ([regex]::Matches($t, '(?m)^\$TSA_SCRIPT_VERSAO = "[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+"$').Count -eq 1)
     $codigo = ($t -split "`n" | Where-Object { $_.Trim() -notmatch '^#' -and $_ -notmatch 'Write-Host' }) -join "`n"
+    # A unica mencao permitida: a funcao vazia que anula Set-ExecutionPolicy no preparo das ferramentas.
+    $codigo = $codigo.Replace('function Set-ExecutionPolicy { }', '')
     Confere "$nome nao usa Start-Transcript, Set-ExecutionPolicy, cmdkey, curl, BITS, Invoke-WebRequest, iex, Authenticode nem exit" `
       ($codigo -notmatch 'Start-Transcript|Set-ExecutionPolicy|cmdkey|curl(\.exe)?\b|Start-BitsTransfer|Invoke-WebRequest|Invoke-RestMethod|Invoke-Expression|\biex\b|\birm\b|Get-AuthenticodeSignature|(?m)^\s*exit\b|\$env:[A-Za-z_]*(CONVITE|CREDENCIAL)')
   }
@@ -487,7 +490,7 @@ exit 0
     }
   }
   $script:CFG = @{ id = "$nome-" + [guid]::NewGuid().ToString('N'); validar = @(200); erro410 = 'convite_usado'; release = 200
-    manifesto = $MAN_OK; manifesto2 = ''; artefato = $FAKE_EXE; corte = $false; artefato_codigo = 200; perfil_sugerido = '' }
+    manifesto = $MAN_OK; manifesto2 = ''; artefato = $FAKE_EXE; corte = $false; artefato_codigo = 200; perfil_sugerido = ''; prereqs = '' }
 }
 
 function Rodar {
@@ -552,19 +555,19 @@ if ($Modo -eq 'nsis') {
   $sha = Sha256Arquivo $exe
   Write-Host "instalador: $((Get-Item -LiteralPath $exe).Length) bytes, sha256 $sha"
   Write-Host "destino (com espaco e acento): $APP"
-  $fs = Abrir-Conferido $exe (Get-Item -LiteralPath $exe).Length $sha
-  Confere 'arquivo aberto e conferido pelo mesmo identificador' ($null -ne $fs)
-  $falhas = 0
-  try { [IO.File]::OpenWrite($exe).Dispose() } catch { $falhas++ }
-  try { [IO.File]::Delete($exe); if (Test-Path -LiteralPath $exe) { throw 'continua' } } catch { $falhas++ }
-  try { [IO.File]::Move($exe, "$exe.outro") } catch { $falhas++ }
-  try { [IO.Directory]::Move($pasta, "$pasta-outra") } catch { $falhas++ }
-  Confere '(b) escrever, apagar, renomear o arquivo e renomear a pasta falham com o identificador aberto' ($falhas -eq 4)
+  $aberto = Abrir-Conferido $exe (Get-Item -LiteralPath $exe).Length $sha
+  Confere 'arquivo aberto e conferido pelo mesmo identificador' ($null -ne $aberto)
+  $recusas = 0
+  try { [IO.File]::OpenWrite($exe).Dispose() } catch { $recusas++ }
+  try { [IO.File]::Delete($exe); if (Test-Path -LiteralPath $exe) { throw 'continua' } } catch { $recusas++ }
+  try { [IO.File]::Move($exe, "$exe.outro") } catch { $recusas++ }
+  try { [IO.Directory]::Move($pasta, "$pasta-outra") } catch { $recusas++ }
+  Confere '(b) escrever, apagar, renomear o arquivo e renomear a pasta falham com o identificador aberto' ($recusas -eq 4)
   $sw = [Diagnostics.Stopwatch]::StartNew()
-  $r = [TsaNativo1]::Executar($exe, ('/S /D=' + $APP), 600000)
+  $r = [TsaNativo1]::Executar($aberto.Final, ('/S /D=' + $APP), 600000)
   Write-Host "Executar: estado=$($r[0]) codigo=$($r[1]) em $([int]$sw.Elapsed.TotalSeconds) s"
   Confere '(a) o instalador NSIS rodou com o arquivo aberto so para leitura e saiu com 0' ($r[0] -eq 0 -and $r[1] -eq 0)
-  $fs.Dispose()
+  $aberto.Fluxo.Dispose()
   Confere 'TSA.exe no destino pedido por /D=' (Test-Path -LiteralPath (Join-Path $APP 'TSA.exe'))
   $versao = Join-Path $APP 'resources\tsa\tsa-version.json'
   if (Test-Path -LiteralPath $versao) { Write-Host ('tsa-version.json: ' + [IO.File]::ReadAllText($versao).Trim()) } else { Write-Host 'tsa-version.json: ausente' }
@@ -619,22 +622,63 @@ try {
     $comando = "`$env:LOCALAPPDATA = '$LOCAL'; `$env:TSA_FAKE_LOG = '$(Join-Path $S 'falso.log')'; `$env:TSA_FAKE_BUILD = '$BUILD'; " +
       "Write-Host 'MARCA-$NONCE'; iex ([IO.File]::ReadAllText('$arquivo', [Text.Encoding]::UTF8)); [IO.File]::WriteAllText('$rcArquivo', [string]`$LASTEXITCODE); Start-Sleep 3"
     $janela = Start-Process -FilePath (Caminho-PowerShell) -PassThru -ArgumentList @('-NoProfile', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($comando)))
-    $wsh = New-Object -ComObject WScript.Shell
+    # As teclas entram direto na fila de entrada do console da janela (WriteConsoleInput), por um
+    # processo ajudante que se liga a esse console. O ajudante recebe so o numero sorteado e deriva
+    # o convite; o convite nao vai em argumento.
+    $ajudante = @'
+param([int]$Alvo, [string]$Nonce, [string]$Fixo)
+Add-Type -Language CSharp -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class TsaTeclas {
+  [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
+  struct INPUT_RECORD {
+    [FieldOffset(0)] public ushort EventType; [FieldOffset(4)] public int bKeyDown; [FieldOffset(8)] public ushort wRepeatCount;
+    [FieldOffset(10)] public ushort wVirtualKeyCode; [FieldOffset(12)] public ushort wVirtualScanCode; [FieldOffset(14)] public char UnicodeChar;
+    [FieldOffset(16)] public uint dwControlKeyState;
+  }
+  [DllImport("kernel32.dll")] static extern bool FreeConsole();
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AttachConsole(uint pid);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateFileW(string n, uint a, uint s, IntPtr sa, uint c, uint f, IntPtr t);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool WriteConsoleInputW(IntPtr h, INPUT_RECORD[] r, uint n, out uint escritos);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  public static int Digitar(uint pid, string texto) {
+    FreeConsole();
+    if (!AttachConsole(pid)) return -Marshal.GetLastWin32Error();
+    IntPtr h = CreateFileW("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    if (h == new IntPtr(-1)) return -1;
+    int total = 0;
+    foreach (char c in texto) {
+      INPUT_RECORD[] r = new INPUT_RECORD[2];
+      for (int i = 0; i < 2; i++) { r[i].EventType = 1; r[i].bKeyDown = i == 0 ? 1 : 0; r[i].wRepeatCount = 1; r[i].UnicodeChar = c; r[i].wVirtualKeyCode = (ushort)(c == '\r' ? 0x0D : 0); }
+      uint n; if (WriteConsoleInputW(h, r, 2, out n)) total += (int)n;
+    }
+    CloseHandle(h); FreeConsole();
+    return total;
+  }
+}
+"@
+$texto = $Fixo
+if ($Nonce) {
+  $h = New-Object System.Security.Cryptography.SHA256CryptoServiceProvider
+  $texto = [Convert]::ToBase64String($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($Nonce + ':convite'))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
+'@
+    $arqAjudante = Join-Path $TRAB 'teclas.ps1'
+    [IO.File]::WriteAllText($arqAjudante, $ajudante)
     Start-Sleep -Seconds 12
-    $ativou = $wsh.AppActivate($janela.Id)
-    Start-Sleep -Milliseconds 500
-    $wsh.SendKeys($CONVITE + '{ENTER}')
+    $t1 = Start-Process -FilePath (Caminho-PowerShell) -WindowStyle Hidden -PassThru -Wait -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$arqAjudante`"", '-Alvo', $janela.Id, '-Nonce', $NONCE)
     for ($i = 0; $i -lt 100 -and @(Pedidos 'convite/validar').Count -eq 0; $i++) { Start-Sleep -Milliseconds 300 }
     Start-Sleep -Seconds 2
-    [void]$wsh.AppActivate($janela.Id)
-    Start-Sleep -Milliseconds 500
-    $wsh.SendKeys('1{ENTER}')
+    $t2 = Start-Process -FilePath (Caminho-PowerShell) -WindowStyle Hidden -PassThru -Wait -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$arqAjudante`"", '-Alvo', $janela.Id, '-Fixo', '1')
+    $ativou = ($t1.ExitCode -eq 88 -and $t2.ExitCode -eq 4)
     for ($i = 0; $i -lt 300 -and -not (Test-Path -LiteralPath $rcArquivo); $i++) { Start-Sleep -Milliseconds 300 }
     $rc = ''
     if (Test-Path -LiteralPath $rcArquivo) { $rc = [IO.File]::ReadAllText($rcArquivo) }
     if (-not $janela.WaitForExit(15000)) { try { $janela.Kill() } catch { } }
     Write-Host 'console de verdade: recusas reais, convite digitado no Read-Host -AsSecureString'
-    Confere "a janela recebeu o foco e o script terminou com 0 (rc='$rc')" ($ativou -eq $true -and $rc -ceq '0')
+    Confere "as teclas entraram no console da janela e o script terminou com 0 (rc='$rc', teclas $($t1.ExitCode) e $($t2.ExitCode))" ($ativou -eq $true -and $rc -ceq '0')
     Confere 'o convite chegou a Central falsa no corpo (validar) e no cabecalho (artefato)' `
       (@(Pedidos 'convite/validar' | Where-Object { $_.corpo_convite -ceq (Sha256Texto $CONVITE) }).Count -eq 1 -and @(Pedidos '/artefatos/' | Where-Object { $_.convite_cabecalho -ceq (Sha256Texto $CONVITE) }).Count -ge 1)
     Confere 'instalou no perfil com espaco e acento e gravou o setor' ((Instalado) -and [IO.File]::ReadAllText((Join-Path $TSAL 'perfil.json')) -ceq "{ `"perfil`": `"trafego`" }`n")
@@ -685,6 +729,15 @@ try {
   Preparar 'aperfilruim'
   Rodar -Entradas @($CONVITE) -Perfil 'copy'
   Confere 'recusa o id antigo copy sem chamar a Central nem perguntar' ($RC -eq 1 -and @(Pedidos).Count -eq 0 -and $Perguntas.Count -eq 0 -and (Nada-Instalado))
+
+  Preparar 'aferr'
+  $CFG.prereqs = Join-Path $S 'prereqs-falso.ps1'
+  [IO.File]::WriteAllText($CFG.prereqs, 'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted -Force; [IO.File]::WriteAllText($env:TSA_FAKE_LOG + ".prereqs", "so=$env:TSA_ONLY_PREREQS arquivo=$env:TSA_PREREQS_ARQUIVO")')
+  $politica = [string](Get-ExecutionPolicy -Scope CurrentUser)
+  Rodar -Entradas @($CONVITE, '1') -Ajustes @{ PularFerramentas = $false; PrereqsUrl = "http://localhost:$Porta/prereqs.ps1" }
+  $marcaFerr = Join-Path $S 'falso.log.prereqs'
+  Confere 'passo 10: roda o preparo das ferramentas com TSA_ONLY_PREREQS=1, de dentro de tmp, num caminho com acento' ($RC -eq 0 -and (Test-Path -LiteralPath $marcaFerr) -and [IO.File]::ReadAllText($marcaFerr).StartsWith('so=1 arquivo=' + (Join-Path $TSAL 'tmp')))
+  Confere 'o preparo nao muda a politica de execucao do usuario; a pasta temporaria sai no fim' ([string](Get-ExecutionPolicy -Scope CurrentUser) -ceq $politica -and (Sem-Tmp) -and $null -eq $env:TSA_PREREQS_ARQUIVO)
 
   Write-Host '8. convite: formato errado, invalido (401), usado e expirado (410), limite (429)'
   Preparar 'adigita'
@@ -795,6 +848,11 @@ try {
   Start-Sleep -Milliseconds 800
   Rodar -Entradas @($CONVITE, '1')
   Confere 'instalador orfao em tmp\ e encerrado com a trava na mao; depois limpa e instala' ($RC -eq 0 -and -not (Pid-Vivo $orfao.Id) -and (Instalado) -and (Sem-Marca))
+  Preparar 'amarcaruim' @('marca')
+  [IO.File]::WriteAllText((Join-Path $TSAL 'atualizador\primeira-instalacao.json'), '{}')
+  $retrato = Retrato $LOCAL
+  Rodar -Entradas @($CONVITE, '1')
+  Confere 'marca fora do formato nao autoriza apagar: para sem mexer em nada' ($RC -eq 1 -and (Tem 'Nada foi apagado') -and (Retrato $LOCAL) -ceq $retrato -and (Texto-Falso) -ceq '' -and $Perguntas.Count -eq 0)
   Preparar 'amarcatrava' @('marca')
   [void][IO.Directory]::CreateDirectory((Join-Path $TSAL 'logs'))
   $ocupada = [IO.File]::Open((Join-Path $TSAL 'logs\.atualizar.trava'), 'OpenOrCreate', 'ReadWrite', 'None')
@@ -889,6 +947,16 @@ try {
   Preparar 'trocailegivel' @('cadastrada', 'atualizador', 'troca')
   Rodar -Amb @{ FAKE_RETOMAR = 'ilegivel' }
   Confere 'estado ilegivel depois do -Retomar: para' ($RC -eq 1 -and (Tem 'interrompida') -and (Nada-Instalado))
+  Preparar 'trocaestranha'
+  [void][IO.Directory]::CreateDirectory((Join-Path $TSAL 'atualizacao'))
+  foreach ($ruim in @('{"troca":', '{"troca":false}', '{"estado":"sem_novidade"}')) {
+    [IO.File]::WriteAllText((Join-Path $TSAL 'atualizacao\estado.json'), $ruim)
+    Rodar -Entradas @($CONVITE, '1')
+    Confere "estado.json sem troca legivel ($ruim): nao instala por cima" ($RC -eq 1 -and (Tem 'interrompida') -and (Nada-Instalado) -and @(Pedidos).Count -eq 0)
+  }
+  [IO.File]::WriteAllText((Join-Path $TSAL 'atualizacao\estado.json'), '{"troca":null}')
+  Rodar -Entradas @($CONVITE, '1')
+  Confere 'estado.json com "troca": null: instala' ($RC -eq 0 -and (Instalado))
   Preparar 'trocasem' @('troca')
   Rodar -Entradas @($CONVITE, '1')
   Confere 'sem o script do atualizador: para sem instalar' ($RC -eq 1 -and (Tem 'interrompida') -and (Nada-Instalado) -and $Perguntas.Count -eq 0)
@@ -934,16 +1002,16 @@ try {
   Confere 'arquivo fora de %LOCALAPPDATA%\TSA e recusado' ($null -eq (Abrir-Conferido (Join-Path $fora 'tsa-windows-x64.exe') $FAKE_BYTES $FAKE_SHA))
   Confere 'SHA-256 errado: devolve nulo e deixa o arquivo fechado' ($null -eq (Abrir-Conferido $exe $FAKE_BYTES ('0' * 64)) -and $(try { [IO.File]::Open($exe, 'Open', 'ReadWrite', 'None').Dispose(); $true } catch { $false }))
   Confere 'tamanho errado: devolve nulo' ($null -eq (Abrir-Conferido $exe ($FAKE_BYTES + 1) $FAKE_SHA))
-  $fs = Abrir-Conferido $exe $FAKE_BYTES $FAKE_SHA
-  $falhas = 0
-  try { [IO.File]::OpenWrite($exe).Dispose() } catch { $falhas++ }
-  try { [IO.File]::Delete($exe); if (Test-Path -LiteralPath $exe) { throw 'continua' } } catch { $falhas++ }
-  try { [IO.File]::Move($exe, "$exe.outro") } catch { $falhas++ }
-  try { [IO.Directory]::Move($pasta, "$pasta-outra") } catch { $falhas++ }
-  Confere '(b) escrever, apagar, renomear o arquivo e renomear a pasta falham com o identificador aberto' ($null -ne $fs -and $falhas -eq 4)
-  $r = [TsaNativo1]::Executar($exe, ('/S /D=' + (Join-Path $S ('destino com espa' + [char]0xE7 + 'o'))), 30000)
+  $aberto = Abrir-Conferido $exe $FAKE_BYTES $FAKE_SHA
+  $recusas = 0
+  try { [IO.File]::OpenWrite($exe).Dispose() } catch { $recusas++ }
+  try { [IO.File]::Delete($exe); if (Test-Path -LiteralPath $exe) { throw 'continua' } } catch { $recusas++ }
+  try { [IO.File]::Move($exe, "$exe.outro") } catch { $recusas++ }
+  try { [IO.Directory]::Move($pasta, "$pasta-outra") } catch { $recusas++ }
+  Confere '(b) escrever, apagar, renomear o arquivo e renomear a pasta falham com o identificador aberto' ($null -ne $aberto -and $recusas -eq 4)
+  $r = [TsaNativo1]::Executar($aberto.Final, ('/S /D=' + (Join-Path $S ('destino com espa' + [char]0xE7 + 'o'))), 30000)
   Confere '(a) o instalador (falso) roda com o arquivo aberto so para leitura e sai com 0' ($r[0] -eq 0 -and $r[1] -eq 0 -and (Test-Path -LiteralPath (Join-Path $S ('destino com espa' + [char]0xE7 + 'o\TSA.exe'))))
-  $fs.Dispose()
+  $aberto.Fluxo.Dispose()
   $r = [TsaNativo1]::Executar((Join-Path $S 'nao-existe.exe'), '/S', 5000)
   Confere 'arquivo que nao existe: estado 2, sem excecao' ($r[0] -eq 2)
   $env:LOCALAPPDATA = $localAntes
