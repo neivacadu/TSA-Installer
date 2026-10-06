@@ -1,4 +1,4 @@
-# Instalador do TSA pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.4, seções 4, 5 e 6.
+# Instalador do TSA pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.9, seções 4, 5 e 6.
 #   irm https://ace.caduneiva.com/apptsa/install.ps1 | iex
 # O comando é o mesmo para todos: o convite é pedido aqui, sem aparecer, e nunca entra no comando.
 # Casos (seção 5.3):
@@ -25,8 +25,10 @@ function Novo-Estado {
   $tsal = Join-Path $local 'TSA'
   return @{
     PainelApi = 'https://ace.caduneiva.com/apptsa/api'
-    PrereqsUrl = 'https://neivacadu.github.io/TSA-Installer/install.ps1'
     AppId = 'com.trafegosa.orca-tsa'
+    PrereqsUrl = 'https://neivacadu.github.io/TSA-Installer/install.ps1'
+    ChaveRegistro = '2b019bad-ee4a-5d89-87a5-c147243d5aa1'
+    Programas = Join-Path $local 'Programs'
     Local = $local
     App = $app
     AppExe = Join-Path $app 'TSA.exe'
@@ -45,11 +47,11 @@ function Novo-Estado {
     Perfis = @('trafego', 'audiovisual', 'copy-criativos', 'cs-operacional', 'gestao')
     ReApi = '\Ahttps://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?\z'
     InstaladorS = 600
-    DesinstaladorS = 300
     SobraS = 30
     EsperaDownloadS = 3
     PularFerramentas = $false
     FraseFalha = 'A versão baixada não passou na conferência. Nada foi instalado. Fale com o Cadu.'
+    ConviteNaoEntregue = $false
     Parada = ''
     Rc = 1
     Caso = ''
@@ -821,7 +823,7 @@ function Gravar-Atomico([string]$caminho, [string]$texto) {
   [void][System.IO.Directory]::CreateDirectory($pasta)
   $tmp = Join-Path $pasta ('.' + [System.IO.Path]::GetFileName($caminho) + '.' + $PID + '.tmp')
   [System.IO.File]::WriteAllText($tmp, $texto, (New-Object System.Text.UTF8Encoding $false))
-  if ([System.IO.File]::Exists($caminho)) { [System.IO.File]::Replace($tmp, $caminho, $null) }
+  if ([System.IO.File]::Exists($caminho)) { [System.IO.File]::Replace($tmp, $caminho, [NullString]::Value) }
   else { [System.IO.File]::Move($tmp, $caminho) }
 }
 
@@ -839,10 +841,10 @@ function Mesma-Pasta([string]$a, [string]$b) {
 #   cabecalho-convite     X-TSA-Convite
 #   cabecalho-credencial  Authorization: Bearer <credencial de atualização>
 # Sem redirecionamento: um cabeçalho com segredo não segue para outro endereço.
-# Devolve @{ Codigo; Texto; Bytes; Completo }. Codigo 0 = sem resposta; -1 = credencial ilegível.
+# Devolve @{ Codigo; Texto; Bytes; Completo }. -LimiteTexto: tamanho máximo de uma resposta em memória. Codigo 0 = sem resposta; -1 = credencial ilegível.
 function Http-Pedir {
   param([string]$Metodo, [string]$Url, [string]$Segredo = '', [string]$Extra = '', [string]$Destino = '',
-    [long]$Desde = 0, [long]$Limite = 0)
+    [long]$Desde = 0, [long]$Limite = 0, [long]$LimiteTexto = 1048576)
   $r = @{ Codigo = 0; Texto = ''; Bytes = $null; Completo = $false }
   $resp = $null
   try {
@@ -888,7 +890,7 @@ function Http-Pedir {
       } finally { $saida.Dispose() }
     } else {
       $mem = New-Object System.IO.MemoryStream
-      while ($mem.Length -le 1048576) {
+      while ($mem.Length -le $LimiteTexto) {
         $n = $entrada.Read($buf, 0, $buf.Length)
         if ($n -le 0) { $r.Completo = $true; break }
         $mem.Write($buf, 0, $n)
@@ -965,7 +967,17 @@ function Soltar-Trava {
 # troca em estado.json: 'objeto' (troca interrompida), 'null', 'ausente', 'ilegivel' ou 'outro'.
 # Este arquivo é do atualizador, escrito com ConvertTo-Json (seção 7.1); não é o manifesto.
 function Ler-Troca {
-  if (-not [System.IO.File]::Exists($script:I.Estado)) { return 'ausente' }
+  # 'ausente' só com a falta comprovada do arquivo (ou da pasta dele). Acesso negado, erro de
+  # leitura ou uma pasta com esse nome contam como ilegível.
+  try {
+    $atributos = [System.IO.File]::GetAttributes($script:I.Estado)
+    if (($atributos -band [System.IO.FileAttributes]::Directory) -ne 0) { return 'ilegivel' }
+  } catch {
+    $ex = $_.Exception
+    while ($null -ne $ex.InnerException) { $ex = $ex.InnerException }
+    if ($ex -is [System.IO.FileNotFoundException] -or $ex -is [System.IO.DirectoryNotFoundException]) { return 'ausente' }
+    return 'ilegivel'
+  }
   try { $o = ConvertFrom-Json ([System.IO.File]::ReadAllText($script:I.Estado, [System.Text.Encoding]::UTF8)) }
   catch { return 'ilegivel' }
   if (-not ($o -is [System.Management.Automation.PSCustomObject])) { return 'ilegivel' }
@@ -1008,6 +1020,9 @@ function Encerrar-Sobras {
   $pastas = @(($script:I.Baixado.TrimEnd('\') + '\'), ($script:I.TmpRaiz.TrimEnd('\') + '\'))
   # Todo processo achado fica na lista até sumir: identidade = número e hora de criação.
   $seguidos = New-Object 'System.Collections.Generic.Dictionary[string,int]'
+  # Número e hora de criação de todo processo já seguido, vivo ou não: um filho nascido entre a
+  # consulta e o encerramento do pai entra na lista pelo pai que já saiu.
+  $nascimento = New-Object 'System.Collections.Generic.Dictionary[int,datetime]'
   $fim = [DateTime]::UtcNow.AddSeconds($script:I.SobraS)
   while ($true) {
     try { $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop) } catch { return $false }
@@ -1021,6 +1036,8 @@ function Encerrar-Sobras {
         $eh = [string]::Equals($exe, $script:I.Desinstalador, [StringComparison]::OrdinalIgnoreCase)
         foreach ($pasta in $pastas) { if ($exe.StartsWith($pasta, [StringComparison]::OrdinalIgnoreCase)) { $eh = $true } }
       }
+      $pai = [int]$p.ParentProcessId
+      if ($nascimento.ContainsKey($pai) -and $p.CreationDate -is [datetime] -and $p.CreationDate -ge $nascimento[$pai]) { $eh = $true }
       if ($eh -or $seguidos.ContainsKey($vivos[[int]$p.ProcessId])) { $fila.Enqueue([int]$p.ProcessId) }
     }
     # Filhos, netos e assim por diante entram na lista.
@@ -1029,6 +1046,7 @@ function Encerrar-Sobras {
       $id = [int]$fila.Dequeue()
       if ($id -eq $PID -or -not $visto.Add($id)) { continue }
       $seguidos[$vivos[$id]] = $id
+      foreach ($p in $procs) { if ([int]$p.ProcessId -eq $id -and $p.CreationDate -is [datetime]) { $nascimento[$id] = $p.CreationDate } }
       foreach ($p in $procs) { if ([int]$p.ParentProcessId -eq $id) { $fila.Enqueue([int]$p.ProcessId) } }
     }
     $restam = 0
@@ -1044,57 +1062,125 @@ function Encerrar-Sobras {
   }
 }
 
-# Desfaz uma primeira instalação que não terminou. Só roda com a marca presente e a trava na mão.
-# O desinstalador roda no lugar (_?=, último argumento, sem aspas), dentro do objeto de trabalho;
-# nesse modo ele não apaga a si mesmo, e o que sobrar de $APP sai depois.
-# Devolve $true se a pasta do app e a marca saíram.
-function Desfazer-Primeira {
-  if ((Encerrar-Sobras) -ne $true) { return $false }
-  if ([System.IO.File]::Exists($script:I.Desinstalador)) {
-    # O conteúdo do desinstalador não tem referência para conferir (o contrato manda rodá-lo); o
-    # que se garante é o caminho: sem junção, dentro de $APP, preso contra troca enquanto roda.
-    $preso = Abrir-Protegido $script:I.Desinstalador $script:I.App
-    if ($null -eq $preso) { return $false }
-    try { [void][TsaNativo1]::Executar($preso.Final, ('/S _?=' + $script:I.App), $script:I.DesinstaladorS * 1000) } catch { }
-    finally { $preso.Fluxo.Dispose() }
+# Marca de primeira instalação (seção 5.3). Devolve @{ Estado; Id; Fase; Build; Hora; Sha }:
+# Estado 'ausente', 'invalida' (não lê ou fora do formato: nunca autoriza apagar nada) ou 'ok'.
+# Id é a identidade da tentativa: sha256 e iniciada_em.
+function Ler-Marca {
+  $r = @{ Estado = 'invalida'; Id = ''; Fase = ''; Build = ''; Hora = ''; Sha = '' }
+  try { [void][System.IO.File]::GetAttributes($script:I.Primeira) }
+  catch {
+    $ex = $_.Exception
+    while ($null -ne $ex.InnerException) { $ex = $ex.InnerException }
+    if ($ex -is [System.IO.FileNotFoundException] -or $ex -is [System.IO.DirectoryNotFoundException]) { $r.Estado = 'ausente' }
+    return $r
   }
-  try {
-    if ([System.IO.Directory]::Exists($script:I.App)) { [System.IO.Directory]::Delete($script:I.App, $true) }
-    if ([System.IO.Directory]::Exists($script:I.App)) { return $false }
-    [System.IO.File]::Delete($script:I.Primeira)
-  } catch { return $false }
-  return (-not [System.IO.File]::Exists($script:I.Primeira))
+  try { $o = Ler-JsonArquivo $script:I.Primeira } catch { return $r }
+  if (-not (Eh-Objeto $o) -or $o.get_Count() -ne 5) { return $r }
+  $fase = Campo-Texto $o 'fase'; $sha = Campo-Texto $o 'sha256'; $build = Campo-Texto $o 'build_id'; $hora = Campo-Texto $o 'iniciada_em'
+  if ((Campo-Texto $o 'schema') -cne 'tsa.instalacao.primeira/v1') { return $r }
+  if (@('instalando', 'instalado', 'limpando') -cnotcontains $fase) { return $r }
+  if ($null -eq $sha -or $sha -cnotmatch '\A[0-9a-f]{64}\z') { return $r }
+  if ((Tsa-BuildIdValido $build) -ne $true) { return $r }
+  if ($null -eq $hora -or $hora -cnotmatch '\A([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z\z') { return $r }
+  if ((Tsa-DataHoraExiste ([int]$Matches[1]) ([int]$Matches[2]) ([int]$Matches[3]) ([int]$Matches[4]) ([int]$Matches[5]) ([int]$Matches[6])) -ne $true) { return $r }
+  return @{ Estado = 'ok'; Id = ($sha + '|' + $hora); Fase = $fase; Build = $build; Hora = $hora; Sha = $sha }
 }
 
-# Identidade da marca de primeira instalação: sha256 e iniciada_em. '' se não existe; 'invalida' se
-# não lê ou não está no formato (marca inválida nunca autoriza apagar nada).
-function Ler-Marca {
-  if (-not [System.IO.File]::Exists($script:I.Primeira)) { return '' }
-  try { $o = Ler-JsonArquivo $script:I.Primeira } catch { return 'invalida' }
-  $sha = Campo-Texto $o 'sha256'
-  $hora = Campo-Texto $o 'iniciada_em'
-  if ((Campo-Texto $o 'schema') -cne 'tsa.instalacao.primeira/v1' -or $o.get_Count() -ne 3) { return 'invalida' }
-  if ($null -eq $sha -or $sha -cnotmatch '\A[0-9a-f]{64}\z') { return 'invalida' }
-  if ($null -eq $hora -or $hora -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') { return 'invalida' }
-  return ($sha + '|' + $hora)
+function Gravar-Marca([string]$fase, [string]$sha, [string]$build, [string]$hora) {
+  Gravar-Atomico $script:I.Primeira ('{ "schema": "tsa.instalacao.primeira/v1", "fase": "' + $fase + '", "sha256": "' + $sha + '", "build_id": "' + $build + '", "iniciada_em": "' + $hora + '" }' + "`n")
+}
+
+# Atalho TSA.lnk do usuário cujo destino é $APP\TSA.exe (atalho com outro destino fica).
+function Apagar-Atalhos {
+  $pastas = @([Environment]::GetFolderPath('DesktopDirectory'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('StartMenu'))
+  $shell = $null
+  foreach ($pasta in $pastas) {
+    if (-not $pasta) { continue }
+    $lnk = Join-Path $pasta 'TSA.lnk'
+    if (-not [System.IO.File]::Exists($lnk)) { continue }
+    if ($null -eq $shell) { $shell = New-Object -ComObject WScript.Shell }
+    $destino = [string]$shell.CreateShortcut($lnk).TargetPath
+    if ([string]::Equals($destino, $script:I.AppExe, [StringComparison]::OrdinalIgnoreCase)) { [System.IO.File]::Delete($lnk) }
+  }
+}
+
+# Limpeza de uma primeira instalação que não terminou (seção 5.3). Só com a marca válida e a trava
+# na mão; só aqui e na falha do passo 7. Sem desinstalador: nenhum script o executa (5.4, item 3).
+# Antes de apagar, a marca passa para a fase limpando. Ordem: pasta $APP; atalhos que apontam
+# para $APP\TSA.exe; chave exata do registro, só se a pasta registrada é $APP. Com os três passos
+# feitos, apaga a marca. Devolve $true só com tudo feito; qualquer falha mantém a marca.
+function Limpar-Primeira($marca) {
+  if ($null -eq $script:I.TravaAberta -or $marca.Estado -cne 'ok') { return $false }
+  try {
+    if ((Encerrar-Sobras) -ne $true) { return $false }
+    Gravar-Marca 'limpando' $marca.Sha $marca.Build $marca.Hora
+    if ([System.IO.Directory]::Exists($script:I.App)) { [System.IO.Directory]::Delete($script:I.App, $true) }
+    if ([System.IO.Directory]::Exists($script:I.App) -or [System.IO.File]::Exists($script:I.App)) { return $false }
+    Apagar-Atalhos
+    if ((Ler-Registro) -ceq 'app') {
+      $u = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall', $true)
+      if ($null -eq $u) { return $false }
+      try { $u.DeleteSubKeyTree($script:I.ChaveRegistro, $false) } finally { $u.Dispose() }
+    }
+    if ((Ler-Registro) -ceq 'app') { return $false }
+    [System.IO.File]::Delete($script:I.Primeira)
+    return (-not [System.IO.File]::Exists($script:I.Primeira))
+  } catch { return $false }
+}
+
+# Sinal de uso do TSA em $APP: processo do app aberto, cadastro, ou saúde gravada depois do começo
+# da tentativa. Na dúvida (lista de processos ou arquivo que não lê), conta como uso.
+function Ha-SinalDeUso($marca) {
+  try {
+    foreach ($p in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+      if ([string]::Equals([string]$p.ExecutablePath, $script:I.AppExe, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+  } catch { return $true }
+  if ([System.IO.File]::Exists($script:I.Instalacao) -or [System.IO.Directory]::Exists($script:I.Instalacao)) { return $true }
+  $saude = Join-Path $script:I.Tsal 'saude.json'
+  if ([System.IO.File]::Exists($saude) -or [System.IO.Directory]::Exists($saude)) {
+    try { $quando = Campo-Texto (Ler-JsonArquivo $saude) 'gravado_em' } catch { return $true }
+    if ($null -eq $quando -or $quando -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z\z') { return $true }
+    if ([string]::CompareOrdinal($quando.Substring(0, 19), $marca.Hora.Substring(0, 19)) -ge 0) { return $true }
+  }
+  return $false
 }
 
 # Antes de classificar, item 2: primeira instalação interrompida. Devolve $true quando a outra
 # execução terminou enquanto esta esperava a trava: nada é apagado e a classificação recomeça.
 function Recuperar-Primeira {
   $antes = Ler-Marca
-  if ($antes -ceq '') { return $false }
-  if ($antes -ceq 'invalida') { Parar 'Há uma instalação interrompida que não consegui ler. Nada foi apagado. Fale com o Cadu.' }
+  if ($antes.Estado -ceq 'ausente') { return $false }
+  $naoTerminou = 'Há uma instalação do TSA que não terminou direito. Fale com o Cadu.'
+  if ($antes.Estado -cne 'ok') { Parar $naoTerminou }
   if (-not (Pegar-Trava)) { Parar 'Há outra instalação em andamento. Espere terminar e rode o comando de novo.' }
   try {
     # Com a trava na mão, lê de novo: a marca tem de ser a mesma, e não pode haver troca.
+    $marca = Ler-Marca
     $troca = Ler-Troca
-    if ((Ler-Marca) -cne $antes -or $troca -ceq 'objeto') { return $true }
+    if ($marca.Estado -ceq 'ausente' -or ($marca.Estado -ceq 'ok' -and $marca.Id -cne $antes.Id) -or $troca -ceq 'objeto') { return $true }
+    if ($marca.Estado -cne 'ok') { Parar $naoTerminou }
     if ($troca -cne 'ausente' -and $troca -cne 'null') { Parar 'Há uma atualização interrompida. Fale com o Cadu.' }
-    Dizer 'Uma instalação anterior parou no meio. Limpando...'
-    if ((Desfazer-Primeira) -ne $true) {
-      Parar 'Não consegui limpar a instalação que parou no meio. Espere um minuto e rode o comando de novo. Se repetir, fale com o Cadu.'
+    # A marca sozinha não autoriza apagar nada. A primeira regra que casa vale.
+    # Registro conflitante: não toca em nada; a classificação dá o caso D.
+    if ((Ler-Registro) -ceq 'conflito') { return $false }
+    # Fase instalado: o instalador terminou e o build_id foi conferido. Só preserva: apaga a marca
+    # e segue. Vem antes da conferência de identidade e uso (no caso C o cadastro já existe).
+    if ($marca.Fase -ceq 'instalado') {
+      [System.IO.File]::Delete($script:I.Primeira)
+      $script:I.ConviteNaoEntregue = $true
+      return $false
     }
+    # Identidade divergente (o que está em $APP não é desta tentativa) ou sinal de uso.
+    $versao = Join-Path $script:I.App 'resources\tsa\tsa-version.json'
+    if ([System.IO.File]::Exists($versao)) {
+      $instalado = Ler-BuildInstalado
+      if ($instalado -cne '' -and $instalado -cne $marca.Build) { Parar $naoTerminou }
+    }
+    if ((Ha-SinalDeUso $marca) -ne $false) { Parar $naoTerminou }
+    # instalando (o script morreu com o instalador em andamento) ou limpando (limpeza pela metade).
+    Dizer 'Uma instalação anterior parou no meio. Limpando...'
+    if ((Limpar-Primeira $marca) -ne $true) { Parar 'Não deu para limpar a instalação que falhou. Fale com o Cadu.' }
   } finally { Soltar-Trava }
   return $false
 }
@@ -1115,49 +1201,57 @@ function Esta-Cadastrada {
   return $true
 }
 
-# Entrada de desinstalação do TSA no registro apontando para fora de $APP (caso D).
-function Ha-TsaForaDoPadrao {
-  foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryHive]::LocalMachine)) {
-    foreach ($vista in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
-      $u = $null
-      try {
-        $u = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, $vista).OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall')
-      } catch { $u = $null }
-      if ($null -eq $u) { continue }
-      foreach ($nome in $u.GetSubKeyNames()) {
-        $k = $null
-        try { $k = $u.OpenSubKey($nome) } catch { $k = $null }
-        if ($null -eq $k) { continue }
-        $exibe = [string]$k.GetValue('DisplayName', '')
-        $ehTsa = ($exibe -cmatch '\ATSA( [0-9][0-9A-Za-z.+-]*)?\z') -or
-          [string]::Equals($nome.Trim('{', '}'), $script:I.AppId, [StringComparison]::OrdinalIgnoreCase)
-        if (-not $ehTsa) { continue }
-        $pastas = New-Object System.Collections.Generic.List[string]
-        $local = [string]$k.GetValue('InstallLocation', '')
-        if ($local.Trim()) { $pastas.Add($local.Trim().Trim('"')) }
-        foreach ($valor in @('DisplayIcon', 'UninstallString', 'QuietUninstallString')) {
-          $t = [string]$k.GetValue($valor, '')
-          if ($t -match '\A\s*"([^"]+\.exe)"' -or $t -match '\A\s*(.+?\.exe)') {
-            try { $pastas.Add([System.IO.Path]::GetDirectoryName($Matches[1])) } catch { }
+# Registro do TSA (seção 5.3). Devolve 'nenhum', 'app' (registrado em $APP) ou 'conflito'.
+# A entrada do TSA é a chave exata em HKCU; a pasta registrada é a pasta do executável que é o
+# primeiro termo do UninstallString, lido respeitando as aspas (o InstallLocation vem vazio).
+# Conflito: a chave exata aponta para outra pasta; ou outra entrada, em HKCU ou HKLM, cita um
+# "Uninstall TSA.exe" fora de $APP. Chave que não lê ou texto com mais de uma leitura: conflito.
+function Ler-Registro {
+  $caminho = 'Software\Microsoft\Windows\CurrentVersion\Uninstall'
+  $resultado = 'nenhum'
+  try {
+    foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryHive]::LocalMachine)) {
+      foreach ($vista in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+        $u = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, $vista).OpenSubKey($caminho)
+        if ($null -eq $u) { continue }
+        foreach ($nome in $u.GetSubKeyNames()) {
+          $k = $u.OpenSubKey($nome)
+          if ($null -eq $k) { return 'conflito' }
+          $valor = $k.GetValue('UninstallString', $null)
+          $exata = ($hive -eq [Microsoft.Win32.RegistryHive]::CurrentUser -and [string]::Equals($nome, $script:I.ChaveRegistro, [StringComparison]::OrdinalIgnoreCase))
+          if ($exata) {
+            if (-not ($valor -is [string])) { return 'conflito' }
+            $exe = $null
+            if ($valor -match '\A\s*"([^"]+)"(\s|\z)') { $exe = $Matches[1] }
+            elseif ($valor -match '\A\s*([^\s"]+)\s*\z') { $exe = $Matches[1] }
+            if (-not $exe) { return 'conflito' }
+            $pasta = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($exe))
+            if (-not (Mesma-Pasta $pasta $script:I.App)) { return 'conflito' }
+            $resultado = 'app'
+            continue
           }
-        }
-        foreach ($pasta in $pastas) {
-          if ($pasta -and -not (Mesma-Pasta $pasta $script:I.App)) { return $true }
+          if ($valor -is [string] -and $valor -match 'Uninstall TSA\.exe') {
+            foreach ($m in [regex]::Matches($valor, '(?i)([A-Za-z]:\\[^"<>|?*]*?)\\Uninstall TSA\.exe')) {
+              if (-not (Mesma-Pasta $m.Groups[1].Value $script:I.App)) { return 'conflito' }
+            }
+            if ([regex]::Matches($valor, '(?i)([A-Za-z]:\\[^"<>|?*]*?)\\Uninstall TSA\.exe').Count -eq 0) { return 'conflito' }
+          }
         }
       }
     }
-  }
-  return $false
+  } catch { return 'conflito' }
+  return $resultado
 }
 
+# O caso D tem precedência sobre todos: com registro conflitante o instalador apagaria o TSA da
+# outra pasta, então o script não instala, não atualiza e não limpa nada.
 function Classificar {
-  $temExe = [System.IO.File]::Exists($script:I.AppExe)
   $cadastrada = ((Esta-Cadastrada) -eq $true)
-  if ($temExe) {
+  if ((Ler-Registro) -ceq 'conflito') { return 'D' }
+  if ([System.IO.File]::Exists($script:I.AppExe)) {
     if ($cadastrada) { return 'B1' }
     return 'B2'
   }
-  if ((Ha-TsaForaDoPadrao) -ne $false) { return 'D' }
   if ($cadastrada) { return 'C' }
   return 'A'
 }
@@ -1383,12 +1477,13 @@ function Instalar {
   if (-not (Pegar-Trava)) { Parar 'Há outra atualização em andamento. Espere terminar e rode o comando de novo.' }
   # (c) Reclassifica dentro da trava: outro instalador pode ter terminado enquanto este baixava.
   $troca = Ler-Troca
-  if (($troca -cne 'ausente' -and $troca -cne 'null') -or [System.IO.File]::Exists($script:I.Primeira) -or (Classificar) -cne $script:I.Caso) {
+  if (($troca -cne 'ausente' -and $troca -cne 'null') -or (Ler-Marca).Estado -cne 'ausente' -or (Classificar) -cne $script:I.Caso) {
     Soltar-Trava
     Parar 'O TSA já foi instalado neste computador. Abra o TSA.'
   }
   # (d) Marca: a partir daqui, o que estiver em $APP foi posto por este script.
-  Gravar-Atomico $script:I.Primeira ('{ "schema": "tsa.instalacao.primeira/v1", "sha256": "' + $m.Sha + '", "iniciada_em": "' + (Hora-Agora) + '" }' + "`n")
+  $hora = Hora-Agora
+  Gravar-Marca 'instalando' $m.Sha $m.BuildId $hora
   Dizer 'Instalando...'
   $certo = $false
   try {
@@ -1401,11 +1496,13 @@ function Instalar {
   } catch { $certo = $false }
   Fechar-Exe
   if ($certo -ne $true) {
-    [void](Desfazer-Primeira)
+    $limpou = Limpar-Primeira (Ler-Marca)
     Soltar-Trava
+    if ($limpou -ne $true) { Parar 'Não deu para limpar a instalação que falhou. Fale com o Cadu.' }
     Parar $script:I.FraseFalha
   }
   # (g)
+  Gravar-Marca 'instalado' $m.Sha $m.BuildId $hora
   [System.IO.File]::Delete($script:I.Primeira)
   Soltar-Trava
   Feito "TSA $($m.Versao) instalado"
@@ -1464,41 +1561,88 @@ function Assinatura-Resumo {
   } catch { return '' }
 }
 
-# Passo 10. atalho: as ferramentas vêm do instalador de hoje (TSA_ONLY_PREREQS=1, mesma fonte do
-# comando do GitHub), como no install.sh. Teto: não há grupo por perfil. Saída: a WO-30 junta os dois.
-# O arquivo baixado fica preso contra troca (mesma regra da seção 5.4, item 1) e é conferido contra
-# os bytes recebidos antes de rodar. O instalador de hoje muda a política de execução do usuário;
-# aqui isso não pode (seção 5.1, item 7): no processo filho, Set-ExecutionPolicy não faz nada.
+# ---------------------------------------------------------------- pré-requisitos (passo 10)
+# Roda um programa sem janela e devolve o código de saída; a saída é lida e descartada.
+function Rodar-Programa([string]$exe, [string]$argumentos, [string]$pasta = '') {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $exe; $psi.Arguments = $argumentos; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+  if ($pasta) { $psi.WorkingDirectory = $pasta }
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $erro = $p.StandardError.ReadToEndAsync()
+  [void]$p.StandardOutput.ReadToEnd()
+  $p.WaitForExit()
+  [void]$erro.Result
+  return [int]$p.ExitCode
+}
+
+# Identidade padrão do Git, quando a pessoa não tem nenhuma. Ponto único: para trocar o padrão,
+# é só aqui.
+function Identidade-Git-Padrao {
+  $usuario = [string][Environment]::UserName
+  return @{ 'user.name' = $usuario; 'user.email' = ($usuario + '@tsa.local') }
+}
+
+# Identidade do Git: lê a configuração efetiva, fora de qualquer repositório. Código 1 = não
+# definida; qualquer outro erro = não deu para ler, e nada é escrito. Só o que está comprovadamente
+# não definido é preenchido, em --global. Identidade que já existe nunca é trocada.
+function Por-Identidade-Git {
+  $exe = ''
+  $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($git) { $exe = $git.Source }
+  else {
+    # O PATH novo do usuário ainda não vale neste processo: procura onde o preparo instala.
+    $exe = Join-Path $script:I.Programas 'Git\cmd\git.exe'
+  }
+  if (-not [System.IO.File]::Exists($exe)) { return }
+  $padrao = Identidade-Git-Padrao
+  foreach ($chave in @('user.name', 'user.email')) {
+    if ((Rodar-Programa $exe ('config --get ' + $chave) $env:SystemRoot) -ne 1) { continue }
+    $valor = [string]$padrao[$chave]
+    if (-not $valor -or $valor -match '["\\%]') { continue }
+    if ((Rodar-Programa $exe ('config --global ' + $chave + ' "' + $valor + '"') $env:SystemRoot) -eq 0) {
+      Write-Host "  O Git ficou com $chave = $valor. Para trocar: git config --global $chave ""outro valor"""
+    }
+  }
+}
+
+# Passo 10: Node LTS, Git portátil, Python e Claude Code, no perfil e sem administrador, pelas
+# funções do docs/install.ps1 de hoje (TSA_ONLY_PREREQS=1; mesma fonte do comando do GitHub), sem
+# duplicar a lógica aqui. Mídia fica fora (TSA_SEM_MIDIA=1). O arquivo baixado é conferido contra
+# os bytes recebidos e fica preso contra troca enquanto roda (regra da seção 5.4, item 1). Aquele
+# script muda a política de execução do usuário; aqui isso não pode (seção 5.1, item 7): no
+# processo filho, Set-ExecutionPolicy não faz nada. Ele mesmo diz o que faltou, em "Pendencias".
+# Falha aqui não desfaz a instalação do TSA.
 function Ferramentas {
   if ($script:I.PularFerramentas) { return }
   Dizer 'Preparando as ferramentas...'
-  $r = Http-Pedir -Metodo 'GET' -Url $script:I.PrereqsUrl
   $preso = $null
-  if ($r.Codigo -eq 200 -and $r.Completo -and $r.Bytes -is [byte[]] -and $r.Bytes.Length -gt 0) {
-    try {
+  try {
+    $r = Http-Pedir -Metodo 'GET' -Url $script:I.PrereqsUrl
+    if ($r.Codigo -eq 200 -and $r.Completo -and $r.Bytes -is [byte[]] -and $r.Bytes.Length -gt 0) {
       $arquivo = Join-Path $script:I.Tmp 'prereqs.ps1'
       [System.IO.File]::WriteAllBytes($arquivo, $r.Bytes)
       $preso = Abrir-Conferido $arquivo ([long]$r.Bytes.Length) (Tsa-Sha256Hex $r.Bytes)
-    } catch { $preso = $null }
-  }
+    }
+  } catch { $preso = $null }
   if ($null -eq $preso) {
-    Write-Host 'Não consegui baixar o preparo das ferramentas. Rode depois:'
-    Write-Host ('  $env:TSA_ONLY_PREREQS=1; irm ' + $script:I.PrereqsUrl + ' | iex')
+    Write-Host 'Não consegui preparar as ferramentas (Node, Git, Python e Claude Code). O TSA foi instalado. Para preparar depois, rode:'
+    Write-Host ('  function Set-ExecutionPolicy { }; $env:TSA_ONLY_PREREQS=1; $env:TSA_SEM_MIDIA=1; irm ' + $script:I.PrereqsUrl + ' | iex')
     return
   }
-  $antes = $env:TSA_ONLY_PREREQS
-  $antesArquivo = $env:TSA_PREREQS_ARQUIVO
+  $antes = @{ TSA_ONLY_PREREQS = $env:TSA_ONLY_PREREQS; TSA_SEM_MIDIA = $env:TSA_SEM_MIDIA; TSA_PREREQS_ARQUIVO = $env:TSA_PREREQS_ARQUIVO }
   try {
     $env:TSA_ONLY_PREREQS = '1'
+    $env:TSA_SEM_MIDIA = '1'
     $env:TSA_PREREQS_ARQUIVO = $preso.Final
     # Texto de comando constante; o caminho vai por variável de ambiente (não é segredo).
     & (Caminho-PowerShell) -NoProfile -ExecutionPolicy Bypass -Command 'function Set-ExecutionPolicy { }; & $env:TSA_PREREQS_ARQUIVO' | Out-Host
-  } catch { }
+  } catch { Write-Host '  Aviso: o preparo das ferramentas parou com erro. O TSA foi instalado.' -ForegroundColor Yellow }
   finally {
-    $env:TSA_ONLY_PREREQS = $antes
-    $env:TSA_PREREQS_ARQUIVO = $antesArquivo
+    foreach ($k in @($antes.Keys)) { [Environment]::SetEnvironmentVariable($k, $antes[$k]) }
     try { $preso.Fluxo.Dispose() } catch { }
   }
+  try { Por-Identidade-Git } catch { Write-Host '  Aviso: não consegui conferir a identidade do Git.' -ForegroundColor Yellow }
 }
 
 function Abrir-Tsa {
@@ -1573,7 +1717,8 @@ function Rodar-Casos {
   $script:I.Caso = Classificar
   if ($script:I.Caso -ceq 'B1') { Caso-B1; $script:I.Rc = 0; return }
   if ($script:I.Caso -ceq 'B2') {
-    Write-Host 'Este computador já tem o TSA. Abra o TSA: ele termina o cadastro e passa a se atualizar sozinho.'
+    if ($script:I.ConviteNaoEntregue) { Write-Host 'O TSA já está instalado. Abra o TSA e cole o seu convite na tela de cadastro.' }
+    else { Write-Host 'Este computador já tem o TSA. Abra o TSA: ele termina o cadastro e passa a se atualizar sozinho.' }
     $script:I.Rc = 0
     return
   }
