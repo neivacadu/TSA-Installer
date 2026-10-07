@@ -1021,61 +1021,60 @@ function Retomar-Troca {
 function Encerrar-Sobras {
   if ($null -eq $script:I.TravaAberta) { return $false }
   $pastas = @(($script:I.Baixado.TrimEnd('\') + '\'), ($script:I.TmpRaiz.TrimEnd('\') + '\'))
-  # Todo processo achado fica na lista até sumir: identidade = número e hora de criação.
-  $seguidos = New-Object 'System.Collections.Generic.Dictionary[string,int]'
-  # Número e hora de criação de todo processo já seguido, vivo ou não: um filho nascido entre a
-  # consulta e o encerramento do pai entra na lista pelo pai que já saiu.
-  $nascimento = New-Object 'System.Collections.Generic.Dictionary[int,datetime]'
+  # Cada processo seguido fica com o identificador aberto até o fim: enquanto ele existir, o
+  # Windows não dá aquele número a outro processo. Assim "filho de um seguido" não se confunde
+  # com filho de um processo alheio, e o encerramento atinge a mesma instância.
+  $seguidos = New-Object 'System.Collections.Generic.Dictionary[int,object]'
   $fim = [DateTime]::UtcNow.AddSeconds($script:I.SobraS)
-  while ($true) {
-    try { $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop) } catch { return $false }
-    $vivos = New-Object 'System.Collections.Generic.Dictionary[int,string]'
-    foreach ($p in $procs) { $vivos[[int]$p.ProcessId] = ([string][int]$p.ProcessId + '@' + [string]$p.CreationDate) }
-    $fila = New-Object System.Collections.Queue
-    foreach ($p in $procs) {
-      $exe = [string]$p.ExecutablePath
-      $eh = $false
-      if ($exe) {
-        $eh = [string]::Equals($exe, $script:I.Desinstalador, [StringComparison]::OrdinalIgnoreCase)
-        foreach ($pasta in $pastas) { if ($exe.StartsWith($pasta, [StringComparison]::OrdinalIgnoreCase)) { $eh = $true } }
+  try {
+    while ($true) {
+      try { $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop) } catch { return $false }
+      $semIdentidade = $false
+      $achouNovo = $true
+      while ($achouNovo) {
+        $achouNovo = $false
+        foreach ($p in $procs) {
+          $id = [int]$p.ProcessId
+          if ($id -eq $PID -or $seguidos.ContainsKey($id) -or -not ($p.CreationDate -is [datetime])) { continue }
+          $exe = [string]$p.ExecutablePath
+          $eh = $false
+          if ($exe) {
+            $eh = [string]::Equals($exe, $script:I.Desinstalador, [StringComparison]::OrdinalIgnoreCase)
+            foreach ($pasta in $pastas) { if ($exe.StartsWith($pasta, [StringComparison]::OrdinalIgnoreCase)) { $eh = $true } }
+          }
+          # Filho de um seguido: o pai está na lista e o filho nasceu depois dele.
+          $pai = [int]$p.ParentProcessId
+          if ($seguidos.ContainsKey($pai) -and $p.CreationDate -ge $seguidos[$pai].Nasceu) { $eh = $true }
+          if (-not $eh) { continue }
+          # Abre o identificador e confere que é a instância da lista (mesma hora de criação; a
+          # folga de 1 ms cobre só o arredondamento entre as duas fontes da hora).
+          $alvo = $null
+          try {
+            $alvo = [System.Diagnostics.Process]::GetProcessById($id)
+            [void]$alvo.Handle
+            if ([Math]::Abs(($alvo.StartTime - $p.CreationDate).TotalMilliseconds) -le 1) {
+              $seguidos[$id] = @{ Proc = $alvo; Nasceu = $p.CreationDate }
+              $achouNovo = $true
+              $alvo = $null
+            }
+          } catch {
+            # Já saiu (some na próxima consulta) ou não deu para abrir: sem identidade, não conclui.
+            $semIdentidade = $true
+          } finally { if ($null -ne $alvo) { $alvo.Dispose() } }
+        }
       }
-      # Filho de um processo já seguido: nasceu depois dele e, se o número do pai foi reusado por
-      # outro processo, antes desse outro nascer.
-      $pai = [int]$p.ParentProcessId
-      if ($nascimento.ContainsKey($pai) -and $p.CreationDate -is [datetime] -and $p.CreationDate -ge $nascimento[$pai]) {
-        $reuso = $null
-        foreach ($q in $procs) { if ([int]$q.ProcessId -eq $pai -and $q.CreationDate -is [datetime] -and $q.CreationDate -ne $nascimento[$pai]) { $reuso = $q.CreationDate } }
-        if ($null -eq $reuso -or $p.CreationDate -lt $reuso) { $eh = $true }
+      $restam = 0
+      foreach ($s in @($seguidos.Values)) {
+        $saiu = $false
+        try { $saiu = $s.Proc.HasExited } catch { $saiu = $false }
+        if (-not $saiu) { $restam++; try { $s.Proc.Kill() } catch { } }
       }
-      if ($eh -or $seguidos.ContainsKey($vivos[[int]$p.ProcessId])) { $fila.Enqueue([int]$p.ProcessId) }
+      if ($restam -eq 0 -and -not $semIdentidade) { return $true }
+      if ([DateTime]::UtcNow -ge $fim) { return $false }
+      Start-Sleep -Milliseconds 500
     }
-    # Filhos, netos e assim por diante entram na lista.
-    $visto = New-Object 'System.Collections.Generic.HashSet[int]'
-    while ($fila.Count -gt 0) {
-      $id = [int]$fila.Dequeue()
-      if ($id -eq $PID -or -not $visto.Add($id)) { continue }
-      $seguidos[$vivos[$id]] = $id
-      $nasceu = $null
-      foreach ($p in $procs) { if ([int]$p.ProcessId -eq $id -and $p.CreationDate -is [datetime]) { $nasceu = $p.CreationDate; $nascimento[$id] = $nasceu } }
-      # Só é filho quem nasceu depois do pai (número de processo reusado não cria parentesco).
-      foreach ($p in $procs) { if ([int]$p.ParentProcessId -eq $id -and $null -ne $nasceu -and $p.CreationDate -is [datetime] -and $p.CreationDate -ge $nasceu) { $fila.Enqueue([int]$p.ProcessId) } }
-    }
-    $restam = 0
-    foreach ($par in @($seguidos.GetEnumerator())) {
-      if ($vivos.ContainsKey($par.Value) -and $vivos[$par.Value] -ceq $par.Key) {
-        $restam++
-        # Encerra pela mesma instância: abre o identificador, confere a hora de criação e só então mata.
-        try {
-          $alvo = [System.Diagnostics.Process]::GetProcessById($par.Value)
-          [void]$alvo.Handle
-          if ($nascimento.ContainsKey($par.Value) -and [Math]::Abs(($alvo.StartTime - $nascimento[$par.Value]).TotalSeconds) -lt 2) { $alvo.Kill() }
-          $alvo.Dispose()
-        } catch { }
-      }
-    }
-    if ($restam -eq 0) { return $true }
-    if ([DateTime]::UtcNow -ge $fim) { return $false }
-    Start-Sleep -Milliseconds 500
+  } finally {
+    foreach ($s in @($seguidos.Values)) { try { $s.Proc.Dispose() } catch { } }
   }
 }
 
@@ -1114,7 +1113,9 @@ function Apagar-Atalhos {
   foreach ($pasta in $pastas) {
     if (-not $pasta) { continue }
     $lnk = Join-Path $pasta 'TSA.lnk'
-    if (-not [System.IO.File]::Exists($lnk)) { continue }
+    $ha = Existe-Comprovado $lnk
+    if ($ha -ceq 'nao') { continue }
+    if ($ha -cne 'sim') { throw 'atalho que não dá para conferir' }
     if ($null -eq $shell) { $shell = New-Object -ComObject WScript.Shell }
     $destino = [string]$shell.CreateShortcut($lnk).TargetPath
     if ([string]::Equals($destino, $script:I.AppExe, [StringComparison]::OrdinalIgnoreCase)) { [System.IO.File]::Delete($lnk) }
@@ -1132,7 +1133,8 @@ function Limpar-Primeira($marca) {
     if ((Encerrar-Sobras) -ne $true) { return $false }
     Gravar-Marca 'limpando' $marca.Sha $marca.Build $marca.Hora
     if ([System.IO.Directory]::Exists($script:I.App)) { [System.IO.Directory]::Delete($script:I.App, $true) }
-    if ([System.IO.Directory]::Exists($script:I.App) -or [System.IO.File]::Exists($script:I.App)) { return $false }
+    # Só segue com a falta comprovada da pasta.
+    if ((Existe-Comprovado $script:I.App) -cne 'nao') { return $false }
     Apagar-Atalhos
     if ((Ler-Registro) -ceq 'app') {
       $u = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall', $true)
@@ -1277,7 +1279,10 @@ function Ler-Registro {
 function Classificar {
   $cadastrada = ((Esta-Cadastrada) -eq $true)
   if ((Ler-Registro) -ceq 'conflito') { return 'D' }
-  if ([System.IO.File]::Exists($script:I.AppExe)) {
+  # Presença, falta comprovada ou dúvida: com dúvida sobre o TSA.exe, ninguém instala.
+  $app = Existe-Comprovado $script:I.AppExe
+  if ($app -ceq 'duvida') { return 'duvida' }
+  if ($app -ceq 'sim') {
     if ($cadastrada) { return 'B1' }
     return 'B2'
   }
