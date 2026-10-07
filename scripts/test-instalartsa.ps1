@@ -646,6 +646,10 @@ if ($Modo -eq 'ferramentas') {
   function Onde([string]$c) { $x = Get-Command $c -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($x) { return $x.Source }; return 'ausente' }
   foreach ($c in 'node', 'git', 'claude') { Write-Host "antes: $c = $(Onde $c)" }
   $antesGit = Onde 'git'
+  # A sessao nao enxerga .local\bin, mas o PATH do usuario ja tem: o processo tem de receber assim mesmo.
+  $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); $k.SetValue('Path', ($pathAntesCru.Valor.Trim(';') + ';' + (Join-Path $env:USERPROFILE '.local\bin')), $pathAntesCru.Tipo); $k.Dispose()
+  $pathComBin = Ler-PathUsuario
+  $env:Path = (@($env:Path -split ';') | Where-Object { $_ -and $_ -notmatch '\\\.local\\bin\\?$' }) -join ';'
   # Conta de teste: a identidade do Git sai, para o passo 10 por a padrao.
   if ($antesGit -ne 'ausente') { & $antesGit config --global --unset user.name 2>$null; & $antesGit config --global --unset user.email 2>$null }
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -663,7 +667,8 @@ if ($Modo -eq 'ferramentas') {
   $nodeDir = Join-Path $LOCAL 'Programs\nodejs'
   Confere 'o Node foi instalado pelo script na pasta do perfil e resolve para ela' ((Onde 'node') -ceq (Join-Path $nodeDir 'node.exe'))
   Confere 'npm.ps1, npx.ps1 e corepack.ps1 sairam do Node instalado; os .cmd ficaram' (-not (Test-Path -LiteralPath (Join-Path $nodeDir 'npm.ps1')) -and -not (Test-Path -LiteralPath (Join-Path $nodeDir 'npx.ps1')) -and -not (Test-Path -LiteralPath (Join-Path $nodeDir 'corepack.ps1')) -and (Test-Path -LiteralPath (Join-Path $nodeDir 'npm.cmd')))
-  Confere 'as pastas novas entraram no FIM do PATH do usuario; o que havia continua na frente, igual' ($pathDepois.StartsWith($pathAntesCru.Valor.Trim(';')) -and $pathDepois.Length -gt $pathAntesCru.Valor.Trim(';').Length -and $pathDepois.Contains($nodeDir))
+  Confere 'as pastas novas entraram no FIM do PATH do usuario; o que havia continua na frente, igual' ($pathDepois.StartsWith($pathComBin.Valor.Trim(';')) -and $pathDepois.Length -gt $pathComBin.Valor.Trim(';').Length -and $pathDepois.Contains($nodeDir))
+  Confere 'pasta que ja estava no PATH do usuario e faltava nesta janela entra no PATH do processo' ($env:Path.TrimEnd(';').Contains((Join-Path $env:USERPROFILE '.local\bin')))
   Confere 'o PATH deste processo recebeu as pastas no fim, e o git que ja existia resolve para o mesmo caminho' ($env:Path.Contains($nodeDir) -and (Onde 'git') -ceq $antesGit)
   # A provar (5.3, passo 10): com a politica sem mudar, npm digitado no PowerShell responde.
   $politicaNova = Politica-Efetiva

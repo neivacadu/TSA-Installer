@@ -1824,9 +1824,16 @@ function Acertar-Path($antes) {
     try { $k.SetValue('Path', $valor, $antes.Tipo) } finally { $k.Dispose() }
     [TsaNativo2]::AvisarAmbiente()
   }
-  # PATH deste processo: o TSA aberto pelo script, e os terminais dele, enxergam as ferramentas na hora.
-  $meu = @(Pastas-Do-Path $env:Path)
-  foreach ($pasta in $novas) {
+  # PATH deste processo: o TSA aberto pelo script, e os terminais dele, enxergam as ferramentas na
+  # hora. Conferido à parte do PATH do usuário: uma pasta pode já estar lá e faltar nesta janela.
+  $exigidas = New-Object System.Collections.Generic.List[string]
+  foreach ($pasta in $novas) { $exigidas.Add($pasta) }
+  $exigidas.Add((Join-Path $env:USERPROFILE '.local\bin'))
+  foreach ($pasta in @((Join-Path $script:I.Programas 'nodejs'), (Join-Path $script:I.Programas 'Git\cmd'))) {
+    foreach ($x in @(Pastas-Do-Path ([string](Ler-PathUsuario).Valor))) { if ([string]::Equals($x, $pasta, [StringComparison]::OrdinalIgnoreCase)) { $exigidas.Add($pasta) } }
+  }
+  foreach ($pasta in $exigidas) {
+    $meu = @(Pastas-Do-Path $env:Path)
     $ja = $false
     foreach ($x in $meu) { if ([string]::Equals($x, $pasta, [StringComparison]::OrdinalIgnoreCase)) { $ja = $true } }
     if (-not $ja) { $env:Path = $env:Path.TrimEnd(';') + ';' + $pasta }
@@ -1879,12 +1886,36 @@ function Conferir-Ferramentas($antes) {
   }
 }
 
+# Código do processo filho que roda o preparo de hoje. Texto constante, sem dado nenhum. Carrega
+# as funções do arquivo conferido (tudo menos a chamada final de Main) e troca duas antes de
+# chamar Main: Set-ExecutionPolicy não faz nada, e o auxiliar do PATH acrescenta no FIM em vez de
+# pôr na frente, já durante o preparo (o que a pessoa tinha continua valendo o tempo todo).
+function Codigo-Do-Preparo {
+  return @'
+$t = [IO.File]::ReadAllText($env:TSA_PREREQS_ARQUIVO)
+$i = $t.TrimEnd().LastIndexOf([char]10)
+if ($i -lt 0 -or $t.Substring($i).Trim() -cne 'Main') { throw 'preparo em formato inesperado' }
+. ([scriptblock]::Create($t.Substring(0, $i)))
+function Set-ExecutionPolicy { }
+function Add-UserPath([string]$pasta) {
+  $alvo = $pasta.TrimEnd('\')
+  $atual = [string][Environment]::GetEnvironmentVariable('Path', 'User')
+  if (-not (@($atual -split ';') | Where-Object { $_.TrimEnd('\') -ieq $alvo })) {
+    [Environment]::SetEnvironmentVariable('Path', ($atual.TrimEnd(';') + ';' + $pasta).TrimStart(';'), 'User')
+  }
+  if (-not (@($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $alvo })) { $env:Path = $env:Path.TrimEnd(';') + ';' + $pasta }
+}
+Main
+'@
+}
+
 # Passo 10: Node LTS, Git portátil, Python e Claude Code, no perfil e sem administrador, pelas
 # funções do docs/install.ps1 de hoje (TSA_ONLY_PREREQS=1; mesma fonte do comando do GitHub), sem
 # duplicar a lógica aqui. Mídia fica fora (TSA_SEM_MIDIA=1). O arquivo baixado é conferido contra
 # os bytes recebidos e fica preso contra troca enquanto roda (regra da seção 5.4, item 1). Aquele
-# script muda a política de execução do usuário; aqui isso não pode (seção 5.1, item 7): no
-# processo filho, Set-ExecutionPolicy não faz nada. Ele mesmo diz o que faltou, em "Pendencias".
+# script muda a política de execução do usuário e põe as pastas na frente do PATH; aqui isso não
+# pode (seção 5.1, item 7, e passo 10): ver Codigo-Do-Preparo. Ele mesmo diz o que faltou, em
+# "Pendencias".
 # Depois: atalhos .ps1 do Node novo, PATH no fim, conferência dos caminhos e identidade do Git.
 # Falha aqui não desfaz a instalação do TSA.
 function Ferramentas {
@@ -1903,8 +1934,7 @@ function Ferramentas {
     }
   } catch { $preso = $null }
   if ($null -eq $preso) {
-    Write-Host 'Não consegui preparar as ferramentas (Node, Git, Python e Claude Code). O TSA foi instalado. Para preparar depois, rode:'
-    Write-Host ("  powershell -NoProfile -ExecutionPolicy Bypass -Command 'function Set-ExecutionPolicy { }; `$env:TSA_ONLY_PREREQS=1; `$env:TSA_SEM_MIDIA=1; irm " + $script:I.PrereqsUrl + " | iex'")
+    Write-Host 'Não consegui preparar as ferramentas (Node, Git, Python e Claude Code). O TSA foi instalado. Para preparar depois, rode este comando de novo, ou fale com o Cadu.'
     return
   }
   $antes = @{ TSA_ONLY_PREREQS = $env:TSA_ONLY_PREREQS; TSA_SEM_MIDIA = $env:TSA_SEM_MIDIA; TSA_PREREQS_ARQUIVO = $env:TSA_PREREQS_ARQUIVO }
@@ -1913,7 +1943,8 @@ function Ferramentas {
     $env:TSA_SEM_MIDIA = '1'
     $env:TSA_PREREQS_ARQUIVO = $preso.Final
     # Texto de comando constante; o caminho vai por variável de ambiente (não é segredo).
-    & (Caminho-PowerShell) -NoProfile -ExecutionPolicy Bypass -Command 'function Set-ExecutionPolicy { }; & $env:TSA_PREREQS_ARQUIVO' | Out-Host
+    $codigo = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes((Codigo-Do-Preparo)))
+    & (Caminho-PowerShell) -NoProfile -ExecutionPolicy Bypass -EncodedCommand $codigo | Out-Host
   } catch { Write-Host '  Aviso: o preparo das ferramentas parou com erro. O TSA foi instalado.' -ForegroundColor Yellow }
   finally {
     foreach ($k in @($antes.Keys)) { [Environment]::SetEnvironmentVariable($k, $antes[$k]) }
