@@ -1806,10 +1806,17 @@ function Ler-PathUsuario {
   return $r
 }
 
+# Pastas em que o preparo instala as ferramentas no perfil.
+function Pastas-De-Ferramenta {
+  $p = $script:I.Programas
+  return @((Join-Path $p 'nodejs'), (Join-Path $p 'Git\cmd'), (Join-Path $p 'Python\Python312'), (Join-Path $p 'Python\Python312\Scripts'),
+    (Join-Path $p 'Python\Launcher'), (Join-Path $p 'Python\Python312-embed'))
+}
+
 # Regra do PATH (passo 10): o que a pessoa já tinha continua valendo. As pastas novas entram no
 # FIM do PATH do usuário e do PATH deste processo, sem duplicar, e o PATH da máquina não é tocado.
 # O preparo de hoje põe as pastas na frente; aqui o PATH do usuário é regravado na ordem certa.
-function Acertar-Path($antes) {
+function Acertar-Path($antes, $instaladas = @()) {
   $tinha = @(Pastas-Do-Path $antes.Valor)
   $novas = New-Object System.Collections.Generic.List[string]
   $candidatas = @(Pastas-Do-Path ([string](Ler-PathUsuario).Valor)) + @((Join-Path $env:USERPROFILE '.local\bin'))
@@ -1829,10 +1836,10 @@ function Acertar-Path($antes) {
   $exigidas = New-Object System.Collections.Generic.List[string]
   foreach ($pasta in $novas) { $exigidas.Add($pasta) }
   $exigidas.Add((Join-Path $env:USERPROFILE '.local\bin'))
-  # Toda pasta de ferramenta do perfil (Node, Git, Python) que está no PATH do usuário, nova ou não.
-  $raiz = $script:I.Programas.TrimEnd('\') + '\'
-  foreach ($x in @(Pastas-Do-Path ([string](Ler-PathUsuario).Valor))) {
-    if ($x.StartsWith($raiz, [StringComparison]::OrdinalIgnoreCase)) { $exigidas.Add($x) }
+  # Pasta de ferramenta instalada nesta execução que já constava no PATH do usuário (não é "nova"
+  # lá) e pode faltar nesta janela. Nada além disso e de .local\bin entra.
+  foreach ($pasta in $instaladas) {
+    foreach ($x in @(Pastas-Do-Path ([string](Ler-PathUsuario).Valor))) { if ([string]::Equals($x, $pasta.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { $exigidas.Add($pasta) } }
   }
   foreach ($pasta in $exigidas) {
     $meu = @(Pastas-Do-Path $env:Path)
@@ -1936,6 +1943,8 @@ function Ferramentas {
   $pathAntes = Ler-PathUsuario
   $ondeAntes = @{ git = (Onde-Esta 'git'); node = (Onde-Esta 'node'); claude = (Onde-Esta 'claude') }
   $nodeAntes = (Existe-Comprovado (Join-Path $script:I.Programas 'nodejs')) -cne 'nao'
+  # Pastas de ferramenta que comprovadamente não existiam: as que aparecerem foram instaladas agora.
+  $faltavam = @(Pastas-De-Ferramenta | Where-Object { (Existe-Comprovado $_) -ceq 'nao' })
   $preso = $null
   try {
     $r = Http-Pedir -Metodo 'GET' -Url $script:I.PrereqsUrl
@@ -1962,7 +1971,7 @@ function Ferramentas {
     foreach ($k in @($antes.Keys)) { [Environment]::SetEnvironmentVariable($k, $antes[$k]) }
     try { $preso.Fluxo.Dispose() } catch { }
   }
-  try { Acertar-Path $pathAntes } catch { Write-Host '  Aviso: não consegui acertar o PATH do usuário.' -ForegroundColor Yellow }
+  try { Acertar-Path $pathAntes @($faltavam | Where-Object { [System.IO.Directory]::Exists($_) }) } catch { Write-Host '  Aviso: não consegui acertar o PATH do usuário.' -ForegroundColor Yellow }
   try { Acertar-Npm (-not $nodeAntes -and [System.IO.Directory]::Exists((Join-Path $script:I.Programas 'nodejs'))) } catch { Write-Host '  Aviso: não consegui acertar os atalhos do npm.' -ForegroundColor Yellow }
   try { Conferir-Ferramentas $ondeAntes } catch { Write-Host '  Aviso: não consegui conferir as ferramentas.' -ForegroundColor Yellow }
   try { Por-Identidade-Git } catch { Write-Host '  Aviso: não consegui conferir a identidade do Git.' -ForegroundColor Yellow }
