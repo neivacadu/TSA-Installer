@@ -104,6 +104,15 @@ while ($escuta.IsListening) {
         $res.Abort()
         continue
       }
+      if ($cfg.parada -and $n -eq 0) {
+        # A primeira transferencia para na metade e fica sem mandar nada.
+        $metade = [int]($bytes.Length / 2)
+        $res.OutputStream.Write($bytes, 0, $metade)
+        $res.OutputStream.Flush()
+        Start-Sleep -Seconds ([int]$cfg.parada)
+        $res.Abort()
+        continue
+      }
       $res.OutputStream.Write($bytes, $inicio, $bytes.Length - $inicio)
       $res.Close()
       continue

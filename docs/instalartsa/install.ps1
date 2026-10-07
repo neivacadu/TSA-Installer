@@ -1,4 +1,4 @@
-# Instalador do TSA pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.11, seções 4, 5 e 6.
+# Instalador do TSA pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.15, seções 4, 5 e 6.
 #   irm https://ace.caduneiva.com/apptsa/install.ps1 | iex
 # O comando é o mesmo para todos: o convite é pedido aqui (aparecem asteriscos no lugar dele) e
 # nunca entra no comando.
@@ -16,7 +16,7 @@
 # Tudo fica em funções e só roda na chamada de Main, na última linha.
 param([string]$Perfil = '', [switch]$SemAgendador)
 
-$TSA_SCRIPT_VERSAO = "2026.10.07.1"
+$TSA_SCRIPT_VERSAO = "2026.10.07.2"
 
 # ---------------------------------------------------------------- estado e mensagens
 function Novo-Estado {
@@ -48,7 +48,8 @@ function Novo-Estado {
     Resumo = Join-Path $tsal 'logs\atualizar-auto-ultimo.json'
     Perfis = @('trafego', 'audiovisual', 'copy-criativos', 'cs-operacional', 'gestao')
     ReApi = '\Ahttps://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?\z'
-    InstaladorS = 600
+    InstaladorS = 1800
+    DownloadParadoS = 120
     SobraS = 30
     EsperaDownloadS = 3
     PularFerramentas = $false
@@ -877,7 +878,7 @@ function Mesma-Pasta([string]$a, [string]$b) {
 # Devolve @{ Codigo; Texto; Bytes; Completo }. -LimiteTexto: tamanho máximo de uma resposta em memória. Codigo 0 = sem resposta; -1 = credencial ilegível.
 function Http-Pedir {
   param([string]$Metodo, [string]$Url, [string]$Segredo = '', [string]$Extra = '', [string]$Destino = '',
-    [long]$Desde = 0, [long]$Limite = 0, [long]$LimiteTexto = 1048576)
+    [long]$Desde = 0, [long]$Limite = 0, [long]$LimiteTexto = 1048576, [int]$ParadoS = 0)
   $r = @{ Codigo = 0; Texto = ''; Bytes = $null; Completo = $false }
   $resp = $null
   try {
@@ -886,6 +887,8 @@ function Http-Pedir {
     $req.AllowAutoRedirect = $false
     $req.Timeout = 30000
     $req.ReadWriteTimeout = 60000
+    # Download do artefato: sem limite de tempo total; falha só com $ParadoS sem receber nada.
+    if ($ParadoS -gt 0) { $req.Timeout = $ParadoS * 1000; $req.ReadWriteTimeout = $ParadoS * 1000 }
     $req.UserAgent = 'tsa-install.ps1'
     $req.ServicePoint.Expect100Continue = $false
     if ($Desde -gt 0) { $req.AddRange([long]$Desde) }
@@ -1511,7 +1514,9 @@ function Conferir-Manifesto($resposta) {
   Feito "Assinatura da versão $($script:I.M.Versao) conferida"
 }
 
-# Passo 4: baixa para a pasta temporária, com retomada por Range. Resposta de erro apaga o
+# Passo 4: baixa para a pasta temporária, com retomada por Range. O download não tem limite de
+# tempo total: a transferência cai só com DOWNLOAD_PARADO_S sem receber nenhum byte, e a tentativa
+# seguinte retoma de onde parou. Resposta de erro apaga o
 # parcial (o corpo do erro não pode virar começo do instalador).
 function Baixar-Artefato {
   $m = $script:I.M
@@ -1525,7 +1530,7 @@ function Baixar-Artefato {
     if ([System.IO.File]::Exists($destino)) { $ja = (New-Object System.IO.FileInfo $destino).Length }
     if ($ja -gt $m.Bytes) { [System.IO.File]::Delete($destino); $ja = [long]0 }
     if ($ja -gt 0 -and $ja -eq $m.Bytes) { break }
-    $r = Http-Pedir -Metodo 'GET' -Url $url -Segredo $segredo -Destino $destino -Desde $ja -Limite $m.Bytes
+    $r = Http-Pedir -Metodo 'GET' -Url $url -Segredo $segredo -Destino $destino -Desde $ja -Limite $m.Bytes -ParadoS $script:I.DownloadParadoS
     if (($r.Codigo -eq 200 -or $r.Codigo -eq 206) -and $r.Completo) { break }
     if ($r.Codigo -ne 200 -and $r.Codigo -ne 206 -and $r.Codigo -ne 0) {
       if ([System.IO.File]::Exists($destino)) { [System.IO.File]::Delete($destino) }
@@ -1646,6 +1651,7 @@ function Instalar {
   Dizer 'Instalando...'
   $certo = $false
   $arvoreViva = $false
+  $demorou = $false
   try {
     # (e) Instalador NSIS em modo silencioso; /D= é o último argumento, sem aspas.
     # O instalador nasce suspenso e é gravado no registro de pendentes antes de andar.
@@ -1661,6 +1667,7 @@ function Instalar {
     }
     $r = [TsaNativo2]::Executar($script:I.ExeAberto.Final, ('/S /D=' + $script:I.App), $script:I.InstaladorS * 1000, $aoCriar)
     $arvoreViva = ($r[0] -eq 3)
+    $demorou = ($r[0] -eq 1 -or $r[0] -eq 3)
     # Fim com o objeto de trabalho vazio (saiu, ou foi encerrado e confirmado): a entrada sai.
     if (($r[0] -eq 0 -or $r[0] -eq 1) -and $null -ne $script:I.InstaladorId) { Baixar-Pendente $script:I.InstaladorId.Id $script:I.InstaladorId.Criado }
     if ($r[0] -eq 0 -and $r[1] -eq 0 -and [System.IO.File]::Exists($script:I.AppExe)) {
@@ -1675,6 +1682,8 @@ function Instalar {
     if (-not $arvoreViva) { $limpou = Limpar-Primeira (Ler-Marca) }
     Soltar-Trava
     if ($limpou -ne $true) { Parar 'Não deu para limpar a instalação que falhou. Fale com o Cadu.' }
+    # O instalador estourou INSTALADOR_S: a árvore foi encerrada e a limpeza foi feita.
+    if ($demorou) { Parar 'A instalação demorou demais e foi desfeita. Feche outros programas e rode o comando de novo.' }
     Parar $script:I.FraseFalha
   }
   # (g)

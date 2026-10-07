@@ -1,10 +1,10 @@
-# Atualizar o TSA agora pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.11, seção 3.2.
+# Atualizar o TSA agora pelo painel (Windows) - INSTALAR-F4-WINDOWS-CONTRATO v1.15, seção 3.2.
 #   irm https://ace.caduneiva.com/apptsa/atualizar.ps1 | iex
 # Invólucro curto: roda a cópia local do atualizador, que o app mantém, com -Agora, pela linha
 # de chamada da seção 7.1. A troca é sempre do atualizador; este arquivo não baixa nem troca nada.
 # Não usa exit: com irm | iex ele fecharia a janela. O resultado fica em $LASTEXITCODE.
 
-$TSA_SCRIPT_VERSAO = "2026.10.07.1"
+$TSA_SCRIPT_VERSAO = "2026.10.07.2"
 
 function Main {
   $local = $env:LOCALAPPDATA

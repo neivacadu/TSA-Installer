@@ -1,5 +1,5 @@
 # Testa o instalador do painel para Windows: docs/instalartsa/install.ps1 e atualizar.ps1
-# (INSTALAR-F4-WINDOWS-CONTRATO v1.11, secoes 4, 5 e 6.2). Este arquivo e so ASCII: roda por -File.
+# (INSTALAR-F4-WINDOWS-CONTRATO v1.15, secoes 4, 5 e 6.2). Este arquivo e so ASCII: roda por -File.
 # Os scripts testados tem acento e nao tem BOM; por isso sao lidos como UTF-8 e rodados em memoria,
 # como o irm | iex faz. Nunca rode o install.ps1 por -File.
 #
@@ -516,7 +516,7 @@ exit 0
     }
   }
   $script:CFG = @{ id = "$nome-" + [guid]::NewGuid().ToString('N'); validar = @(200); erro410 = 'convite_usado'; release = 200
-    manifesto = $MAN_OK; manifesto2 = ''; artefato = $FAKE_EXE; corte = $false; artefato_codigo = 200; perfil_sugerido = '' }
+    manifesto = $MAN_OK; manifesto2 = ''; artefato = $FAKE_EXE; corte = $false; artefato_codigo = 200; perfil_sugerido = ''; parada = 0 }
 }
 
 function Rodar {
@@ -893,6 +893,13 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   Rodar -Entradas @($CONVITE, '1')
   $art = @(Pedidos '/artefatos/')
   Confere 'download que cai no meio e retomado por Range e instala' ($RC -eq 0 -and (Instalado) -and $art.Count -eq 2 -and $art[1].range -match '^bytes=[1-9][0-9]*-$')
+  Preparar 'aparado'; $CFG.parada = 5
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  Rodar -Entradas @($CONVITE, '1') -Ajustes @{ DownloadParadoS = 2 }
+  $art = @(Pedidos '/artefatos/')
+  Confere "download parado (DOWNLOAD_PARADO_S sem receber nada) cai e a tentativa seguinte retoma por Range ($([int]$sw.Elapsed.TotalSeconds) s)" ($RC -eq 0 -and (Instalado) -and $art.Count -ge 2 -and $art[$art.Count - 1].range -match '^bytes=[1-9][0-9]*-$')
+  $padrao = & $NovoEstadoOriginal
+  Confere 'parametros da secao 10: INSTALADOR_S = 1800 e DOWNLOAD_PARADO_S = 120' ($padrao.InstaladorS -eq 1800 -and $padrao.DownloadParadoS -eq 120)
   Preparar 'a404'; $CFG.artefato_codigo = 404
   Rodar -Entradas @($CONVITE, '1')
   Confere 'artefato recusado pela Central: para sem instalar' ($RC -eq 1 -and (Tem 'download') -and (Nada-Instalado) -and (Sem-Tmp))
@@ -926,7 +933,7 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   $sw = [Diagnostics.Stopwatch]::StartNew()
   Rodar -Entradas @($CONVITE, '1') -Amb @{ TSA_FAKE_MODO = 'filho' } -Ajustes @{ InstaladorS = 4 }
   $pids = @(Pids-Do-Log (Join-Path $S 'falso.log'))
-  Confere "(d) tempo esgotado encerra a arvore inteira (instalador e filho) e desfaz ($([int]$sw.Elapsed.TotalSeconds) s)" ($RC -eq 1 -and $pids.Count -eq 2 -and @($pids | Where-Object { Pid-Vivo $_ }).Count -eq 0 -and (Nada-Instalado) -and (Sem-Marca))
+  Confere "(d) tempo esgotado encerra a arvore inteira (instalador e filho), desfaz e diz que demorou demais ($([int]$sw.Elapsed.TotalSeconds) s)" ($RC -eq 1 -and (Tem 'demorou demais e foi desfeita') -and $pids.Count -eq 2 -and @($pids | Where-Object { Pid-Vivo $_ }).Count -eq 0 -and (Nada-Instalado) -and (Sem-Marca))
 
   Write-Host '12. primeira instalacao interrompida (marca presente) e instalador que sobrou'
   $CimOriginal = Get-Command Get-CimInstance -CommandType Cmdlet
