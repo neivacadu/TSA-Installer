@@ -1829,8 +1829,10 @@ function Acertar-Path($antes) {
   $exigidas = New-Object System.Collections.Generic.List[string]
   foreach ($pasta in $novas) { $exigidas.Add($pasta) }
   $exigidas.Add((Join-Path $env:USERPROFILE '.local\bin'))
-  foreach ($pasta in @((Join-Path $script:I.Programas 'nodejs'), (Join-Path $script:I.Programas 'Git\cmd'))) {
-    foreach ($x in @(Pastas-Do-Path ([string](Ler-PathUsuario).Valor))) { if ([string]::Equals($x, $pasta, [StringComparison]::OrdinalIgnoreCase)) { $exigidas.Add($pasta) } }
+  # Toda pasta de ferramenta do perfil (Node, Git, Python) que está no PATH do usuário, nova ou não.
+  $raiz = $script:I.Programas.TrimEnd('\') + '\'
+  foreach ($x in @(Pastas-Do-Path ([string](Ler-PathUsuario).Valor))) {
+    if ($x.StartsWith($raiz, [StringComparison]::OrdinalIgnoreCase)) { $exigidas.Add($x) }
   }
   foreach ($pasta in $exigidas) {
     $meu = @(Pastas-Do-Path $env:Path)
@@ -1888,8 +1890,9 @@ function Conferir-Ferramentas($antes) {
 
 # Código do processo filho que roda o preparo de hoje. Texto constante, sem dado nenhum. Carrega
 # as funções do arquivo conferido (tudo menos a chamada final de Main) e troca duas antes de
-# chamar Main: Set-ExecutionPolicy não faz nada, e o auxiliar do PATH acrescenta no FIM em vez de
-# pôr na frente, já durante o preparo (o que a pessoa tinha continua valendo o tempo todo).
+# chamar Main: Set-ExecutionPolicy não faz nada; o auxiliar do PATH acrescenta no FIM em vez de
+# pôr na frente; e o instalador do Python é chamado sem mexer no PATH. Assim o que a pessoa tinha
+# continua valendo o tempo todo, já durante o preparo.
 function Codigo-Do-Preparo {
   return @'
 $t = [IO.File]::ReadAllText($env:TSA_PREREQS_ARQUIVO)
@@ -1904,6 +1907,15 @@ function Add-UserPath([string]$pasta) {
     [Environment]::SetEnvironmentVariable('Path', ($atual.TrimEnd(';') + ';' + $pasta).TrimStart(';'), 'User')
   }
   if (-not (@($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $alvo })) { $env:Path = $env:Path.TrimEnd(';') + ';' + $pasta }
+}
+# O instalador do Python punha as pastas dele na frente do PATH; aqui não. Add-UserPath, logo
+# depois, acrescenta essas pastas no fim.
+function Start-Process {
+  param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru, $WindowStyle, [string]$WorkingDirectory)
+  $a = @{}
+  foreach ($k in $PSBoundParameters.Keys) { $a[$k] = $PSBoundParameters[$k] }
+  if ($a.ContainsKey('ArgumentList')) { $a['ArgumentList'] = @($ArgumentList | ForEach-Object { if ($_ -ceq 'PrependPath=1') { 'PrependPath=0' } else { $_ } }) }
+  Microsoft.PowerShell.Management\Start-Process @a
 }
 Main
 '@
