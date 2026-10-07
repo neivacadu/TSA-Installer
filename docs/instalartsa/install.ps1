@@ -1028,8 +1028,13 @@ function Encerrar-Sobras {
   $fim = [DateTime]::UtcNow.AddSeconds($script:I.SobraS)
   try {
     while ($true) {
+      # Só conclui numa volta em que todos os seguidos já tinham saído ANTES da consulta e a
+      # consulta não achou ninguém novo: um filho criado logo antes de o pai sair aparece nela.
+      $sairamAntes = $true
+      foreach ($s in @($seguidos.Values)) { try { if (-not $s.Proc.HasExited) { $sairamAntes = $false } } catch { $sairamAntes = $false } }
       try { $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop) } catch { return $false }
       $semIdentidade = $false
+      $novos = 0
       $achouNovo = $true
       while ($achouNovo) {
         $achouNovo = $false
@@ -1055,6 +1060,7 @@ function Encerrar-Sobras {
             if ([Math]::Abs(($alvo.StartTime - $p.CreationDate).TotalMilliseconds) -le 1) {
               $seguidos[$id] = @{ Proc = $alvo; Nasceu = $p.CreationDate }
               $achouNovo = $true
+              $novos++
               $alvo = $null
             }
           } catch {
@@ -1069,9 +1075,9 @@ function Encerrar-Sobras {
         try { $saiu = $s.Proc.HasExited } catch { $saiu = $false }
         if (-not $saiu) { $restam++; try { $s.Proc.Kill() } catch { } }
       }
-      if ($restam -eq 0 -and -not $semIdentidade) { return $true }
+      if ($sairamAntes -and $novos -eq 0 -and $restam -eq 0 -and -not $semIdentidade) { return $true }
       if ([DateTime]::UtcNow -ge $fim) { return $false }
-      Start-Sleep -Milliseconds 500
+      if ($restam -gt 0 -or $semIdentidade) { Start-Sleep -Milliseconds 500 }
     }
   } finally {
     foreach ($s in @($seguidos.Values)) { try { $s.Proc.Dispose() } catch { } }

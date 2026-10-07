@@ -355,6 +355,13 @@ static class InstaladorFalso {
     int pid = Process.GetCurrentProcess().Id;
     string modo = Environment.GetEnvironmentVariable("TSA_FAKE_MODO") ?? "ok";
     if (cl.EndsWith(" /filho", StringComparison.Ordinal)) { Log("filho pid=" + pid); Thread.Sleep(600000); return 0; }
+    // Pai que cria um filho e sai quando o arquivo de sinal aparece (prova do orfao com filho tardio).
+    if (cl.EndsWith(" /pai-tardio", StringComparison.Ordinal)) {
+      string sinal = Environment.GetEnvironmentVariable("TSA_FAKE_SINAL");
+      while (!File.Exists(sinal)) Thread.Sleep(20);
+      ProcessStartInfo f = new ProcessStartInfo(eu, "/filho"); f.UseShellExecute = false; Process.Start(f);
+      return 0;
+    }
     if (string.Equals(nome, "Uninstall TSA.exe", StringComparison.OrdinalIgnoreCase)) {
       Log("desinstalar pid=" + pid + " " + cl);
       string d = Path.GetDirectoryName(eu);
@@ -908,6 +915,27 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   Start-Sleep -Milliseconds 800
   Rodar -Entradas @($CONVITE, '1')
   Confere 'instalador orfao em tmp\ e encerrado com a trava na mao; depois limpa e instala' ($RC -eq 0 -and -not (Pid-Vivo $orfao.Id) -and (Instalado) -and (Sem-Marca))
+  # Filho criado depois da primeira consulta, com o pai saindo logo em seguida.
+  Preparar 'amarcatardio' @('marca')
+  $velho = Join-Path $TSAL 'tmp\velho'; [void][IO.Directory]::CreateDirectory($velho)
+  [IO.File]::Copy($FAKE_EXE, (Join-Path $velho 'tsa-windows-x64.exe'))
+  $sinal = Join-Path $S 'sinal.txt'
+  $env:TSA_FAKE_SINAL = $sinal; $env:TSA_FAKE_LOG = Join-Path $S 'falso.log'
+  $pai = Start-Process -FilePath (Join-Path $velho 'tsa-windows-x64.exe') -ArgumentList '/pai-tardio' -PassThru
+  Start-Sleep -Milliseconds 800
+  $CimOriginal = Get-Command Get-CimInstance -CommandType Cmdlet
+  $script:VezesCim = 0
+  function Get-CimInstance {
+    $r = & $CimOriginal @args
+    $script:VezesCim++
+    # A 1a consulta e a do sinal de uso; a 2a e a primeira da busca de orfaos. Logo depois dela,
+    # o pai cria o filho e sai.
+    if ($script:VezesCim -eq 2) { [IO.File]::WriteAllText($sinal, ''); [void]$pai.WaitForExit(5000); Start-Sleep -Milliseconds 300 }
+    return $r
+  }
+  try { Rodar -Entradas @($CONVITE, '1') } finally { Remove-Item function:Get-CimInstance; Remove-Item Env:\TSA_FAKE_SINAL }
+  $tardios = @(Pids-Do-Log (Join-Path $S 'falso.log'))
+  Confere 'filho nascido entre a consulta e a saida do pai e achado e encerrado antes da limpeza' ($RC -eq 0 -and $tardios.Count -ge 1 -and @($tardios | Where-Object { Pid-Vivo $_ }).Count -eq 0 -and (Instalado) -and (Sem-Marca))
   foreach ($par in @(
       @('vazia', '{}'), @('sem fase', '{ "schema": "tsa.instalacao.primeira/v1", "sha256": "' + $FAKE_SHA + '", "build_id": "' + $BUILD + '", "iniciada_em": "2026-10-06T12:00:00Z" }'),
       @('fase desconhecida', (Marca 'outra' $BUILD)), @('data impossivel', (Marca 'instalando' $BUILD '2026-99-99T99:99:99Z')), @('ilegivel', '{"schema":'))) {
