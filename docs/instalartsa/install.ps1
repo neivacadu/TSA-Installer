@@ -764,7 +764,8 @@ public static class TsaNativo1 {
   // (KILL_ON_JOB_CLOSE, identificador não herdável). Ordem da seção 5.4, item 3: o processo nasce
   // suspenso, entra no objeto, a entrada é conferida e só então ele anda: nenhum filho escapa. Espera o processo e o objeto ficar sem processos; no tempo esgotado encerra
   // a árvore inteira. Não herda identificadores (nem a trava, nem o arquivo conferido).
-  // Devolve { estado, código }: estado 0 terminou, 1 tempo esgotado, 2 não conseguiu rodar.
+  // Devolve { estado, código }: estado 0 terminou, 1 tempo esgotado e árvore encerrada, 2 não
+  // conseguiu rodar, 3 tempo esgotado sem confirmar que a árvore saiu.
   public static long[] Executar(string exe, string argumentos, int limiteMs) {
     IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
     if (job == IntPtr.Zero) return new long[] { 2, Marshal.GetLastWin32Error() };
@@ -799,9 +800,11 @@ public static class TsaNativo1 {
           }
         }
         if (!saiu || Ativos(job) != 0) {
-          TerminateJobObject(job, 1);
-          DateTime ate = DateTime.UtcNow.AddSeconds(15);
+          bool pediu = TerminateJobObject(job, 1);
+          DateTime ate = DateTime.UtcNow.AddSeconds(30);
           while (DateTime.UtcNow < ate && Ativos(job) != 0) Thread.Sleep(100);
+          // Sem a confirmação de zero processos, quem chama não pode limpar nada.
+          if (!pediu || Ativos(job) != 0) return new long[] { 3, 0 };
           return new long[] { 1, 0 };
         }
         uint codigo;
@@ -1036,8 +1039,14 @@ function Encerrar-Sobras {
         $eh = [string]::Equals($exe, $script:I.Desinstalador, [StringComparison]::OrdinalIgnoreCase)
         foreach ($pasta in $pastas) { if ($exe.StartsWith($pasta, [StringComparison]::OrdinalIgnoreCase)) { $eh = $true } }
       }
+      # Filho de um processo já seguido: nasceu depois dele e, se o número do pai foi reusado por
+      # outro processo, antes desse outro nascer.
       $pai = [int]$p.ParentProcessId
-      if ($nascimento.ContainsKey($pai) -and $p.CreationDate -is [datetime] -and $p.CreationDate -ge $nascimento[$pai]) { $eh = $true }
+      if ($nascimento.ContainsKey($pai) -and $p.CreationDate -is [datetime] -and $p.CreationDate -ge $nascimento[$pai]) {
+        $reuso = $null
+        foreach ($q in $procs) { if ([int]$q.ProcessId -eq $pai -and $q.CreationDate -is [datetime] -and $q.CreationDate -ne $nascimento[$pai]) { $reuso = $q.CreationDate } }
+        if ($null -eq $reuso -or $p.CreationDate -lt $reuso) { $eh = $true }
+      }
       if ($eh -or $seguidos.ContainsKey($vivos[[int]$p.ProcessId])) { $fila.Enqueue([int]$p.ProcessId) }
     }
     # Filhos, netos e assim por diante entram na lista.
@@ -1046,14 +1055,22 @@ function Encerrar-Sobras {
       $id = [int]$fila.Dequeue()
       if ($id -eq $PID -or -not $visto.Add($id)) { continue }
       $seguidos[$vivos[$id]] = $id
-      foreach ($p in $procs) { if ([int]$p.ProcessId -eq $id -and $p.CreationDate -is [datetime]) { $nascimento[$id] = $p.CreationDate } }
-      foreach ($p in $procs) { if ([int]$p.ParentProcessId -eq $id) { $fila.Enqueue([int]$p.ProcessId) } }
+      $nasceu = $null
+      foreach ($p in $procs) { if ([int]$p.ProcessId -eq $id -and $p.CreationDate -is [datetime]) { $nasceu = $p.CreationDate; $nascimento[$id] = $nasceu } }
+      # Só é filho quem nasceu depois do pai (número de processo reusado não cria parentesco).
+      foreach ($p in $procs) { if ([int]$p.ParentProcessId -eq $id -and $null -ne $nasceu -and $p.CreationDate -is [datetime] -and $p.CreationDate -ge $nasceu) { $fila.Enqueue([int]$p.ProcessId) } }
     }
     $restam = 0
     foreach ($par in @($seguidos.GetEnumerator())) {
       if ($vivos.ContainsKey($par.Value) -and $vivos[$par.Value] -ceq $par.Key) {
         $restam++
-        try { Stop-Process -Id $par.Value -Force -ErrorAction Stop } catch { }
+        # Encerra pela mesma instância: abre o identificador, confere a hora de criação e só então mata.
+        try {
+          $alvo = [System.Diagnostics.Process]::GetProcessById($par.Value)
+          [void]$alvo.Handle
+          if ($nascimento.ContainsKey($par.Value) -and [Math]::Abs(($alvo.StartTime - $nascimento[$par.Value]).TotalSeconds) -lt 2) { $alvo.Kill() }
+          $alvo.Dispose()
+        } catch { }
       }
     }
     if ($restam -eq 0) { return $true }
@@ -1122,10 +1139,22 @@ function Limpar-Primeira($marca) {
       if ($null -eq $u) { return $false }
       try { $u.DeleteSubKeyTree($script:I.ChaveRegistro, $false) } finally { $u.Dispose() }
     }
-    if ((Ler-Registro) -ceq 'app') { return $false }
+    # Só conclui com o registro comprovadamente sem o TSA; leitura inconclusiva mantém a marca.
+    if ((Ler-Registro) -cne 'nenhum') { return $false }
     [System.IO.File]::Delete($script:I.Primeira)
     return (-not [System.IO.File]::Exists($script:I.Primeira))
   } catch { return $false }
+}
+
+# 'sim', 'nao' (falta comprovada) ou 'duvida' (acesso negado ou outro erro).
+function Existe-Comprovado([string]$caminho) {
+  try { [void][System.IO.File]::GetAttributes($caminho); return 'sim' }
+  catch {
+    $ex = $_.Exception
+    while ($null -ne $ex.InnerException) { $ex = $ex.InnerException }
+    if ($ex -is [System.IO.FileNotFoundException] -or $ex -is [System.IO.DirectoryNotFoundException]) { return 'nao' }
+    return 'duvida'
+  }
 }
 
 # Sinal de uso do TSA em $APP: processo do app aberto, cadastro, ou saúde gravada depois do começo
@@ -1136,9 +1165,9 @@ function Ha-SinalDeUso($marca) {
       if ([string]::Equals([string]$p.ExecutablePath, $script:I.AppExe, [StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
   } catch { return $true }
-  if ([System.IO.File]::Exists($script:I.Instalacao) -or [System.IO.Directory]::Exists($script:I.Instalacao)) { return $true }
+  if ((Existe-Comprovado $script:I.Instalacao) -cne 'nao') { return $true }
   $saude = Join-Path $script:I.Tsal 'saude.json'
-  if ([System.IO.File]::Exists($saude) -or [System.IO.Directory]::Exists($saude)) {
+  if ((Existe-Comprovado $saude) -cne 'nao') {
     try { $quando = Campo-Texto (Ler-JsonArquivo $saude) 'gravado_em' } catch { return $true }
     if ($null -eq $quando -or $quando -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z\z') { return $true }
     if ([string]::CompareOrdinal($quando.Substring(0, 19), $marca.Hora.Substring(0, 19)) -ge 0) { return $true }
@@ -1486,9 +1515,11 @@ function Instalar {
   Gravar-Marca 'instalando' $m.Sha $m.BuildId $hora
   Dizer 'Instalando...'
   $certo = $false
+  $arvoreViva = $false
   try {
     # (e) Instalador NSIS em modo silencioso; /D= é o último argumento, sem aspas.
     $r = [TsaNativo1]::Executar($script:I.ExeAberto.Final, ('/S /D=' + $script:I.App), $script:I.InstaladorS * 1000)
+    $arvoreViva = ($r[0] -eq 3)
     if ($r[0] -eq 0 -and $r[1] -eq 0 -and [System.IO.File]::Exists($script:I.AppExe)) {
       # (f) O que foi instalado é a build do manifesto.
       $certo = ((Ler-BuildInstalado) -ceq $m.BuildId)
@@ -1496,7 +1527,9 @@ function Instalar {
   } catch { $certo = $false }
   Fechar-Exe
   if ($certo -ne $true) {
-    $limpou = Limpar-Primeira (Ler-Marca)
+    # Sem confirmar que o instalador e os filhos saíram, nada é limpo: pasta e marca ficam.
+    $limpou = $false
+    if (-not $arvoreViva) { $limpou = Limpar-Primeira (Ler-Marca) }
     Soltar-Trava
     if ($limpou -ne $true) { Parar 'Não deu para limpar a instalação que falhou. Fale com o Cadu.' }
     Parar $script:I.FraseFalha
@@ -1627,7 +1660,7 @@ function Ferramentas {
   } catch { $preso = $null }
   if ($null -eq $preso) {
     Write-Host 'Não consegui preparar as ferramentas (Node, Git, Python e Claude Code). O TSA foi instalado. Para preparar depois, rode:'
-    Write-Host ('  function Set-ExecutionPolicy { }; $env:TSA_ONLY_PREREQS=1; $env:TSA_SEM_MIDIA=1; irm ' + $script:I.PrereqsUrl + ' | iex')
+    Write-Host ("  powershell -NoProfile -ExecutionPolicy Bypass -Command 'function Set-ExecutionPolicy { }; `$env:TSA_ONLY_PREREQS=1; `$env:TSA_SEM_MIDIA=1; irm " + $script:I.PrereqsUrl + " | iex'")
     return
   }
   $antes = @{ TSA_ONLY_PREREQS = $env:TSA_ONLY_PREREQS; TSA_SEM_MIDIA = $env:TSA_SEM_MIDIA; TSA_PREREQS_ARQUIVO = $env:TSA_PREREQS_ARQUIVO }

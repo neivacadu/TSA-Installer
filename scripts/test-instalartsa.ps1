@@ -935,6 +935,11 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   [IO.File]::WriteAllText((Join-Path $TSAL 'saude.json'), '{"schema":"tsa.saude/v1","gravado_em":"2026-10-05T12:30:00Z"}')
   Rodar -Entradas @($CONVITE, '1')
   Confere 'saude de antes da tentativa nao e sinal de uso: limpa e instala' ($RC -eq 0 -and (Instalado) -and (Sem-Marca))
+  Preparar 'amarcaduvida' @('marca')
+  $semAcesso = [IO.File]::Open((Join-Path $TSAL 'saude.json'), 'Create', 'ReadWrite', 'None')
+  $retrato = Retrato (Join-Path $LOCAL 'Programs')
+  try { Rodar -Entradas @($CONVITE, '1') } finally { $semAcesso.Dispose() }
+  Confere 'saude.json que nao da para ler conta como uso: nao apaga nada' ($RC -eq 1 -and (Tem 'terminou direito') -and (Retrato (Join-Path $LOCAL 'Programs')) -ceq $retrato -and -not (Sem-Marca))
   Preparar 'amarcacad' @('marca', 'cadastrada')
   $retrato = Retrato $LOCAL
   Rodar
@@ -961,6 +966,16 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   $retrato = Retrato $LOCAL
   try { Rodar -Entradas @($CONVITE, '1') } finally { Remove-Item $CHAVE_TSA -Recurse -Force }
   Confere 'marca com registro conflitante: nao toca em nada; caso D' ($RC -eq 1 -and (Tem 'fora do lugar') -and (Retrato $LOCAL) -ceq $retrato)
+  Preparar 'amarcaregruim' @('marca')
+  Registrar $CHAVE_TSA ('"' + (Join-Path $APP 'Uninstall TSA.exe') + '" /currentuser')
+  try {
+    # O registro fica ilegivel depois da conferencia: simulado trocando Ler-Registro na limpeza.
+    $LerRegistroOriginal = ${function:Ler-Registro}
+    $script:VezesRegistro = 0
+    function Ler-Registro { $script:VezesRegistro++; if ($script:VezesRegistro -ge 2) { return 'conflito' }; return 'nenhum' }
+    Rodar -Entradas @($CONVITE, '1')
+  } finally { Set-Item function:Ler-Registro $LerRegistroOriginal; Remove-Item $CHAVE_TSA -Recurse -Force -ErrorAction SilentlyContinue }
+  Confere 'limpeza com registro inconclusivo no fim nao e dada como concluida: a marca fica em limpando' ($RC -eq 1 -and (Tem 'limpar a instala') -and [IO.File]::ReadAllText((& $marcaArq)).Contains('"limpando"') -and @(Pedidos).Count -eq 0)
   Preparar 'amarcatrava' @('marca')
   [void][IO.Directory]::CreateDirectory((Join-Path $TSAL 'logs'))
   $ocupada = [IO.File]::Open((Join-Path $TSAL 'logs\.atualizar.trava'), 'OpenOrCreate', 'ReadWrite', 'None')
