@@ -1806,11 +1806,18 @@ function Ler-PathUsuario {
   return $r
 }
 
-# Pastas em que o preparo instala as ferramentas no perfil.
+# Pastas em que o preparo instala as ferramentas no perfil, cada uma com o executável que prova
+# a instalação. "Instalada nesta execução" = o executável comprovadamente não existia antes do
+# preparo e existe depois (a pasta sozinha não prova: pode existir vazia).
 function Pastas-De-Ferramenta {
   $p = $script:I.Programas
-  return @((Join-Path $p 'nodejs'), (Join-Path $p 'Git\cmd'), (Join-Path $p 'Python\Python312'), (Join-Path $p 'Python\Python312\Scripts'),
-    (Join-Path $p 'Python\Launcher'), (Join-Path $p 'Python\Python312-embed'))
+  return @(
+    @{ Pasta = (Join-Path $p 'nodejs'); Prova = (Join-Path $p 'nodejs\node.exe') },
+    @{ Pasta = (Join-Path $p 'Git\cmd'); Prova = (Join-Path $p 'Git\cmd\git.exe') },
+    @{ Pasta = (Join-Path $p 'Python\Python312'); Prova = (Join-Path $p 'Python\Python312\python.exe') },
+    @{ Pasta = (Join-Path $p 'Python\Python312\Scripts'); Prova = (Join-Path $p 'Python\Python312\python.exe') },
+    @{ Pasta = (Join-Path $p 'Python\Launcher'); Prova = (Join-Path $p 'Python\Launcher\py.exe') },
+    @{ Pasta = (Join-Path $p 'Python\Python312-embed'); Prova = (Join-Path $p 'Python\Python312-embed\python.exe') })
 }
 
 # Regra do PATH (passo 10): o que a pessoa já tinha continua valendo. As pastas novas entram no
@@ -1942,9 +1949,8 @@ function Ferramentas {
   Dizer 'Preparando as ferramentas...'
   $pathAntes = Ler-PathUsuario
   $ondeAntes = @{ git = (Onde-Esta 'git'); node = (Onde-Esta 'node'); claude = (Onde-Esta 'claude') }
-  $nodeAntes = (Existe-Comprovado (Join-Path $script:I.Programas 'nodejs')) -cne 'nao'
-  # Pastas de ferramenta que comprovadamente não existiam: as que aparecerem foram instaladas agora.
-  $faltavam = @(Pastas-De-Ferramenta | Where-Object { (Existe-Comprovado $_) -ceq 'nao' })
+  # Ferramentas que comprovadamente não existiam: as que aparecerem foram instaladas agora.
+  $faltavam = @(Pastas-De-Ferramenta | Where-Object { (Existe-Comprovado $_.Prova) -ceq 'nao' })
   $preso = $null
   try {
     $r = Http-Pedir -Metodo 'GET' -Url $script:I.PrereqsUrl
@@ -1971,8 +1977,9 @@ function Ferramentas {
     foreach ($k in @($antes.Keys)) { [Environment]::SetEnvironmentVariable($k, $antes[$k]) }
     try { $preso.Fluxo.Dispose() } catch { }
   }
-  try { Acertar-Path $pathAntes @($faltavam | Where-Object { [System.IO.Directory]::Exists($_) }) } catch { Write-Host '  Aviso: não consegui acertar o PATH do usuário.' -ForegroundColor Yellow }
-  try { Acertar-Npm (-not $nodeAntes -and [System.IO.Directory]::Exists((Join-Path $script:I.Programas 'nodejs'))) } catch { Write-Host '  Aviso: não consegui acertar os atalhos do npm.' -ForegroundColor Yellow }
+  $instaladas = @($faltavam | Where-Object { [System.IO.File]::Exists($_.Prova) } | ForEach-Object { $_.Pasta })
+  try { Acertar-Path $pathAntes $instaladas } catch { Write-Host '  Aviso: não consegui acertar o PATH do usuário.' -ForegroundColor Yellow }
+  try { Acertar-Npm ($instaladas -contains (Join-Path $script:I.Programas 'nodejs')) } catch { Write-Host '  Aviso: não consegui acertar os atalhos do npm.' -ForegroundColor Yellow }
   try { Conferir-Ferramentas $ondeAntes } catch { Write-Host '  Aviso: não consegui conferir as ferramentas.' -ForegroundColor Yellow }
   try { Por-Identidade-Git } catch { Write-Host '  Aviso: não consegui conferir a identidade do Git.' -ForegroundColor Yellow }
   Write-Host '  Janela do PowerShell que já estava aberta só enxerga as ferramentas depois de fechada e aberta de novo.'
