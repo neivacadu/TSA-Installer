@@ -1,5 +1,5 @@
 # Testa o instalador do painel para Windows: docs/instalartsa/install.ps1 e atualizar.ps1
-# (INSTALAR-F4-WINDOWS-CONTRATO v1.9, secoes 4, 5 e 6.2). Este arquivo e so ASCII: roda por -File.
+# (INSTALAR-F4-WINDOWS-CONTRATO v1.11, secoes 4, 5 e 6.2). Este arquivo e so ASCII: roda por -File.
 # Os scripts testados tem acento e nao tem BOM; por isso sao lidos como UTF-8 e rodados em memoria,
 # como o irm | iex faz. Nunca rode o install.ps1 por -File.
 #
@@ -543,6 +543,8 @@ function Pedidos([string]$rota = '') {
       Where-Object { $_.id -eq $script:CFG.id -and ($rota -eq '' -or $_.caminho -like "*$rota*") })
 }
 function Tem([string]$trecho) { return $script:OUT.Contains($trecho) }
+function TemD { return ((Tem 'instalado em outra pasta') -or (Tem 'diferente do esperado')) }
+function Pendente { return (Join-Path $script:TSAL 'atualizacao\instalador-pendente.json') }
 function Instalado { return ((Test-Path -LiteralPath (Join-Path $script:APP 'TSA.exe')) -and ((Ler-JsonArquivo (Join-Path $script:APP 'resources\tsa\tsa-version.json'))['build_id'] -ceq $BUILD)) }
 function Nada-Instalado { return (-not (Test-Path -LiteralPath $script:APP)) }
 function Sem-Marca { return (-not (Test-Path -LiteralPath (Join-Path $script:TSAL 'atualizador\primeira-instalacao.json'))) }
@@ -591,7 +593,7 @@ if ($Modo -eq 'nsis') {
   try { [IO.Directory]::Move($pasta, "$pasta-outra") } catch { $recusas++ }
   Confere '(b) escrever, apagar, renomear o arquivo e renomear a pasta falham com o identificador aberto' ($recusas -eq 4)
   $sw = [Diagnostics.Stopwatch]::StartNew()
-  $r = [TsaNativo1]::Executar($aberto.Final, ('/S /D=' + $APP), 600000)
+  $r = [TsaNativo2]::Executar($aberto.Final, ('/S /D=' + $APP), 600000)
   Write-Host "Executar: estado=$($r[0]) codigo=$($r[1]) em $([int]$sw.Elapsed.TotalSeconds) s"
   Confere '(a) o instalador NSIS rodou com o arquivo aberto so para leitura e saiu com 0' ($r[0] -eq 0 -and $r[1] -eq 0)
   $aberto.Fluxo.Dispose()
@@ -619,7 +621,7 @@ if ($Modo -eq 'nsis') {
   Confere "(f) limpeza: sem pasta, sem atalho, sem chave e sem marca ($([int]$sw.Elapsed.TotalSeconds) s)" ($limpou -eq $true -and -not (Test-Path -LiteralPath $APP) -and -not (Test-Path -LiteralPath $mesa) -and -not (Test-Path -LiteralPath $menu) -and -not (Test-Path $CHAVE_TSA) -and (Ler-Registro) -ceq 'nenhum' -and (Ler-Marca).Estado -ceq 'ausente')
   $aberto = Abrir-Conferido $exe (Get-Item -LiteralPath $exe).Length $sha
   $sw = [Diagnostics.Stopwatch]::StartNew()
-  $r = [TsaNativo1]::Executar($aberto.Final, ('/S /D=' + $APP), 600000)
+  $r = [TsaNativo2]::Executar($aberto.Final, ('/S /D=' + $APP), 600000)
   $aberto.Fluxo.Dispose()
   Confere "(f) instalacao nova em seguida sai limpa: codigo 0, mesmo build_id, registrada em `$APP ($([int]$sw.Elapsed.TotalSeconds) s)" ($r[0] -eq 0 -and $r[1] -eq 0 -and (Ler-BuildInstalado) -ceq $buildNsis -and (Ler-Registro) -ceq 'app')
   Gravar-Marca 'instalando' $sha $buildNsis (Hora-Agora)
@@ -632,30 +634,59 @@ if ($Modo -eq 'nsis') {
 if ($Modo -eq 'ferramentas') {
   # Passo 10 de verdade, com %LOCALAPPDATA% trocado: o que faltar e instalado dentro da pasta de teste.
   Preparar 'ferramentas'
-  $pathAntes = [Environment]::GetEnvironmentVariable('Path', 'User'); $bashAntes = [Environment]::GetEnvironmentVariable('CLAUDE_CODE_GIT_BASH_PATH', 'User')
+  $pathAntesCru = Ler-PathUsuario; $bashAntes = [Environment]::GetEnvironmentVariable('CLAUDE_CODE_GIT_BASH_PATH', 'User')
   $politica = [string](Get-ExecutionPolicy -Scope CurrentUser)
   $env:LOCALAPPDATA = $LOCAL
   $script:I = Novo-Estado
   $script:I.PularFerramentas = $false
   $script:I.Tmp = Join-Path $TSAL 'tmp\f'; [void][IO.Directory]::CreateDirectory($script:I.Tmp)
-  function Onde([string]$c) { $x = Get-Command $c -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch 'WindowsApps' } | Select-Object -First 1; if ($x) { return $x.Source }; return 'ausente' }
-  foreach ($c in 'node', 'git', 'py', 'python', 'claude') { Write-Host "antes: $c = $(Onde $c)" }
+  # Para medir o Node instalado pelo script: este processo deixa de enxergar o Node da maquina.
+  $pathProcesso = $env:Path
+  $env:Path = (@($env:Path -split ';') | Where-Object { $_ -and $_ -notmatch '\\nodejs\\?$' -and $_ -notmatch '\\npm$' }) -join ';'
+  function Onde([string]$c) { $x = Get-Command $c -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($x) { return $x.Source }; return 'ausente' }
+  foreach ($c in 'node', 'git', 'claude') { Write-Host "antes: $c = $(Onde $c)" }
+  $antesGit = Onde 'git'
+  # Conta de teste: a identidade do Git sai, para o passo 10 por a padrao.
+  if ($antesGit -ne 'ausente') { & $antesGit config --global --unset user.name 2>$null; & $antesGit config --global --unset user.email 2>$null }
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $pathDepois = ''
   try { $script:OUT = (Ferramentas *>&1 | Out-String -Width 4096) } finally {
-    $pathDepois = [Environment]::GetEnvironmentVariable('Path', 'User')
-    [Environment]::SetEnvironmentVariable('Path', $pathAntes, 'User'); [Environment]::SetEnvironmentVariable('CLAUDE_CODE_GIT_BASH_PATH', $bashAntes, 'User')
+    $pathDepois = [string](Ler-PathUsuario).Valor
+    $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); $k.SetValue('Path', $pathAntesCru.Valor, $pathAntesCru.Tipo); $k.Dispose()
+    [Environment]::SetEnvironmentVariable('CLAUDE_CODE_GIT_BASH_PATH', $bashAntes, 'User')
   }
   Write-Host $OUT
   Write-Host "Ferramentas: $([int]$sw.Elapsed.TotalSeconds) s"
-  Write-Host "PATH do usuario ganhou: $((@($pathDepois -split ';') | Where-Object { $_ -and (@(([string]$pathAntes) -split ';') -notcontains $_) }) -join ' ; ')"
-  foreach ($c in 'node', 'git', 'py', 'python', 'claude') { Write-Host "depois: $c = $(Onde $c)" }
+  Write-Host "PATH do usuario antes: $($pathAntesCru.Valor)"
+  Write-Host "PATH do usuario depois: $pathDepois"
+  foreach ($c in 'node', 'git', 'claude') { Write-Host "depois: $c = $(Onde $c)" }
+  $nodeDir = Join-Path $LOCAL 'Programs\nodejs'
+  Confere 'o Node foi instalado pelo script na pasta do perfil e resolve para ela' ((Onde 'node') -ceq (Join-Path $nodeDir 'node.exe'))
+  Confere 'npm.ps1, npx.ps1 e corepack.ps1 sairam do Node instalado; os .cmd ficaram' (-not (Test-Path -LiteralPath (Join-Path $nodeDir 'npm.ps1')) -and -not (Test-Path -LiteralPath (Join-Path $nodeDir 'npx.ps1')) -and -not (Test-Path -LiteralPath (Join-Path $nodeDir 'corepack.ps1')) -and (Test-Path -LiteralPath (Join-Path $nodeDir 'npm.cmd')))
+  Confere 'as pastas novas entraram no FIM do PATH do usuario; o que havia continua na frente, igual' ($pathDepois.StartsWith($pathAntesCru.Valor.Trim(';')) -and $pathDepois.Length -gt $pathAntesCru.Valor.Trim(';').Length -and $pathDepois.Contains($nodeDir))
+  Confere 'o PATH deste processo recebeu as pastas no fim, e o git que ja existia resolve para o mesmo caminho' ($env:Path.Contains($nodeDir) -and (Onde 'git') -ceq $antesGit)
+  # A provar (5.3, passo 10): com a politica sem mudar, npm digitado no PowerShell responde.
+  $politicaNova = Politica-Efetiva
+  # Esta maquina pode ter outra politica; a padrao do Windows (Restricted) e posta so no processo filho.
+  $ErrorActionPreference = 'Continue'
+  $saidaNpm = [string](& (Caminho-PowerShell) -NoProfile -ExecutionPolicy Restricted -Command 'npm --version' 2>&1 | Out-String)
+  $saidaNpx = [string](& (Caminho-PowerShell) -NoProfile -ExecutionPolicy Restricted -Command 'npx --version' 2>&1 | Out-String)
+  # Controle: com um npm.ps1 na frente, a mesma politica barra.
+  $controle = Join-Path $S 'controle'; [void][IO.Directory]::CreateDirectory($controle); [IO.File]::WriteAllText((Join-Path $controle 'npm.ps1'), 'Write-Output 9.9.9')
+  $pathSalvo = $env:Path; $env:Path = $controle + ';' + $env:Path
+  $saidaControle = [string](& (Caminho-PowerShell) -NoProfile -ExecutionPolicy Restricted -Command 'npm --version' 2>&1 | Out-String)
+  $env:Path = $pathSalvo
+  $ErrorActionPreference = 'Stop'
+  Write-Host "politica desta maquina para janela nova: $politicaNova; com a politica padrao (Restricted) no processo: npm --version = $($saidaNpm.Trim()); npx --version = $($saidaNpx.Trim())"
+  Confere 'a provar: com a politica padrao, npm e npx digitados no PowerShell respondem (resolvem para o .cmd)' ($saidaNpm.Trim() -match '^[0-9]+\.[0-9]+\.[0-9]+$' -and $saidaNpx.Trim() -match '^[0-9]+\.[0-9]+\.[0-9]+$')
+  Confere 'controle: com um npm.ps1 no caminho, a mesma politica barra' ($saidaControle -notmatch '9\.9\.9' -and $saidaControle -match 'npm\.ps1')
+  Confere 'a politica de execucao do usuario nao mudou' ([string](Get-ExecutionPolicy -Scope CurrentUser) -ceq $politica)
   $git = Onde 'git'
-  if ($git -eq 'ausente') { $git = Join-Path $LOCAL 'Programs\Git\cmd\git.exe' }
-  $nomeGit = ''; if (Test-Path -LiteralPath $git) { $nomeGit = [string](& $git config --get user.name); Write-Host ("git user.name = $nomeGit; user.email = " + (& $git config --get user.email)) }
-  Confere 'Node, Git, Python e Claude Code respondem depois do passo 10' ((Onde 'node') -ne 'ausente' -and (Test-Path -LiteralPath $git) -and ((Onde 'py') -ne 'ausente' -or (Onde 'python') -ne 'ausente') -and ((Onde 'claude') -ne 'ausente' -or (Test-Path (Join-Path $env:USERPROFILE '.local\bin\claude.exe'))))
-  Confere 'o Git ficou com identidade' ($nomeGit -ne '')
-  Confere 'a politica de execucao do usuario nao mudou e a pasta do preparo nao ficou em variavel' ([string](Get-ExecutionPolicy -Scope CurrentUser) -ceq $politica -and $null -eq $env:TSA_PREREQS_ARQUIVO)
+  $nomeGit = ''; if ($git -ne 'ausente') { $nomeGit = [string](& $git config --get user.name); Write-Host ("git user.name = $nomeGit; user.email = " + (& $git config --get user.email)) }
+  $emailGit = ''; if ($git -ne 'ausente') { $emailGit = [string](& $git config --get user.email) }
+  Confere 'o Git ficou com a identidade padrao: e-mail normalizado' ($nomeGit -ne '' -and $emailGit -ceq (Identidade-Git-Padrao ([string][Environment]::UserName))['user.email'] -and $emailGit -cmatch '^[a-z0-9.]+@tsa\.local$')
+  Confere 'a pasta do preparo nao ficou em variavel de ambiente' ($null -eq $env:TSA_PREREQS_ARQUIVO)
+  $env:Path = $pathProcesso
   Write-Host ''; Write-Host "$PASSOU ok, $FALHOU falhas"
   if ($FALHOU -gt 0) { exit 1 }; exit 0
 }
@@ -663,7 +694,7 @@ if ($Modo -eq 'ferramentas') {
 if ($Modo -eq 'filho-matar') {
   # Usado pela prova (c): roda o instalador falso e fica esperando; o teste mata este processo.
   $env:TSA_FAKE_MODO = 'filho'
-  [void][TsaNativo1]::Executar($env:FAKE_EXE_PAI, ('/S /D=' + (Join-Path $TRAB 'nunca')), 600000)
+  [void][TsaNativo2]::Executar($env:FAKE_EXE_PAI, ('/S /D=' + (Join-Path $TRAB 'nunca')), 600000)
   exit 0
 }
 
@@ -781,7 +812,8 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   Confere 'pede o manifesto de win32 + x64 e reconsulta antes de instalar' ($rel.Count -eq 2 -and $rel[0].corpo -ceq '{"convite":"<convite>","plataforma":"win32","arquitetura":"x64"}' -and $rel[1].corpo_convite -ceq (Sha256Texto $CONVITE))
   Confere 'baixa pelo SHA-256 do manifesto, com o convite no cabecalho X-TSA-Convite' ($art.Count -eq 1 -and $art[0].caminho -ceq "/apptsa/api/artefatos/$FAKE_SHA" -and $art[0].convite_cabecalho -ceq (Sha256Texto $CONVITE))
   Confere 'o convite nunca vai na URL' (@(Pedidos | Where-Object { ($_.caminho + $_.consulta).Contains($CONVITE) }).Count -eq 0)
-  Confere 'apaga a marca de primeira instalacao e a pasta temporaria' ((Sem-Marca) -and (Sem-Tmp))
+  Confere 'apaga a marca de primeira instalacao, a pasta temporaria e a entrada do instalador em instalador-pendente.json' ((Sem-Marca) -and (Sem-Tmp) -and -not (Test-Path -LiteralPath (Pendente)))
+  Confere 'o texto do convite diz que aparecem asteriscos' ($Perguntas[0].Contains('aparecem asteriscos no lugar dele'))
   Confere 'sem marca sem-agendador; nao grava instalacao.json (quem cadastra e o app)' (-not (Test-Path -LiteralPath (Join-Path $TSAL 'atualizador\sem-agendador')) -and -not (Test-Path -LiteralPath (Join-Path $TSAL 'atualizador\instalacao.json')))
   Confere 'a trava existe e ficou solta' ((Test-Path -LiteralPath (Join-Path $TSAL 'logs\.atualizar.trava')) -and $(try { [IO.File]::Open((Join-Path $TSAL 'logs\.atualizar.trava'), 'Open', 'ReadWrite', 'None').Dispose(); $true } catch { $false }))
   Start-Sleep -Milliseconds 800
@@ -888,7 +920,8 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   $pids = @(Pids-Do-Log (Join-Path $S 'falso.log'))
   Confere "(d) tempo esgotado encerra a arvore inteira (instalador e filho) e desfaz ($([int]$sw.Elapsed.TotalSeconds) s)" ($RC -eq 1 -and $pids.Count -eq 2 -and @($pids | Where-Object { Pid-Vivo $_ }).Count -eq 0 -and (Nada-Instalado) -and (Sem-Marca))
 
-  Write-Host '12. primeira instalacao interrompida (marca presente)'
+  Write-Host '12. primeira instalacao interrompida (marca presente) e instalador que sobrou'
+  $CimOriginal = Get-Command Get-CimInstance -CommandType Cmdlet
   $marcaArq = { Join-Path $script:TSAL 'atualizador\primeira-instalacao.json' }
   $mesa = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'TSA.lnk'
   $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'TSA.lnk'
@@ -926,7 +959,6 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   $env:TSA_FAKE_SINAL = $sinal; $env:TSA_FAKE_LOG = Join-Path $S 'falso.log'
   $pai = Start-Process -FilePath (Join-Path $velho 'tsa-windows-x64.exe') -ArgumentList '/pai-tardio' -PassThru
   Start-Sleep -Milliseconds 800
-  $CimOriginal = Get-Command Get-CimInstance -CommandType Cmdlet
   $script:VezesCim = 0
   function Get-CimInstance {
     $r = & $CimOriginal @args
@@ -957,12 +989,47 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
     if ($script:VezesCim -eq 2) { [IO.File]::WriteAllText($sinal, ''); for ($i = 0; $i -lt 100 -and (Pid-Vivo $script:PaiId); $i++) { Start-Sleep -Milliseconds 50 }; Start-Sleep -Milliseconds 300 }
     return $r
   }
-  $retrato = Retrato (Join-Path $LOCAL 'Programs')
-  try { Rodar -Entradas @($CONVITE, '1') -Ajustes @{ SobraS = 4 } } finally { Remove-Item function:Get-CimInstance; Remove-Item Env:\TSA_FAKE_SINAL, Env:\TSA_FAKE_FORA }
+  try { Rodar -Entradas @($CONVITE, '1') } finally { Remove-Item function:Get-CimInstance; Remove-Item Env:\TSA_FAKE_SINAL, Env:\TSA_FAKE_FORA }
   $soltos = @([regex]::Matches((Texto-Falso), 'filho pid=([0-9]+)') | ForEach-Object { [int]$_.Groups[1].Value })
   $vivoDepois = ($soltos.Count -eq 1 -and (Pid-Vivo $soltos[0]))
   $soltos | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-  Confere 'candidato que some antes do identificador, com filho vivo fora das pastas: a limpeza fica bloqueada' ($RC -eq 1 -and (Tem 'limpar a instala') -and $vivoDepois -and (Retrato (Join-Path $LOCAL 'Programs')) -ceq $retrato -and -not (Sem-Marca))
+  Confere 'candidato que some e deixa um filho fora das pastas: o filho e reconhecido pelo pai, encerrado, e a limpeza segue' ($RC -eq 0 -and $soltos.Count -eq 1 -and -not $vivoDepois -and (Instalado) -and (Sem-Marca) -and -not (Test-Path -LiteralPath (Pendente)))
+  # Registro que persiste: entrada viva de outra execucao, fora das pastas vigiadas.
+  Preparar 'apendente' @('marca')
+  $foraExe = Join-Path $S 'fora-das-pastas.exe'; [IO.File]::Copy($FAKE_EXE, $foraExe)
+  $env:TSA_FAKE_LOG = Join-Path $S 'falso.log'
+  $solto = Start-Process -FilePath $foraExe -ArgumentList '/filho' -PassThru
+  Start-Sleep -Milliseconds 800
+  $nasc = (& $CimOriginal Win32_Process -Filter "ProcessId=$($solto.Id)").CreationDate.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'")
+  [void][IO.Directory]::CreateDirectory((Join-Path $TSAL 'atualizacao'))
+  [IO.File]::WriteAllText((Pendente), '{ "schema": "tsa.instalador.pendente/v1", "processos": [ { "pid": ' + $solto.Id + ', "criado_em": "' + $nasc + '", "executavel": "x" }, { "pid": 99999999, "criado_em": "2026-10-06T12:00:00Z", "executavel": "ja saiu" } ] }')
+  $soltoVivo = Pid-Vivo $solto.Id
+  Rodar -Entradas @($CONVITE, '1')
+  Confere 'entrada viva do arquivo, fora das pastas, e encerrada; a que ja saiu sai do arquivo; depois limpa e instala' ($RC -eq 0 -and $soltoVivo -and -not (Pid-Vivo $solto.Id) -and (Instalado) -and -not (Test-Path -LiteralPath (Pendente)))
+  # Entrada viva que nao da para encerrar (processo do sistema): bloqueia nesta execucao e na seguinte.
+  $sistema = & $CimOriginal Win32_Process -Filter "Name='csrss.exe'" | Select-Object -First 1
+  $nascSis = $sistema.CreationDate.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'")
+  foreach ($vez in 1, 2) {
+    if ($vez -eq 1) {
+      Preparar 'apendentevivo' @('marca')
+      [void][IO.Directory]::CreateDirectory((Join-Path $TSAL 'atualizacao'))
+      [IO.File]::WriteAllText((Pendente), '{ "schema": "tsa.instalador.pendente/v1", "processos": [ { "pid": ' + $sistema.ProcessId + ', "criado_em": "' + $nascSis + '", "executavel": "x" } ] }')
+      $retrato = Retrato (Join-Path $LOCAL 'Programs')
+    }
+    Rodar -Entradas @($CONVITE, '1') -Ajustes @{ SobraS = 3 }
+    Confere "entrada viva que nao sai: nenhuma acao destrutiva (execucao $vez)" ($RC -eq 1 -and (Tem 'limpar a instala') -and (Retrato (Join-Path $LOCAL 'Programs')) -ceq $retrato -and -not (Sem-Marca) -and [IO.File]::ReadAllText((Pendente)).Contains('"pid": ' + $sistema.ProcessId + ','))
+  }
+  Preparar 'apendenteruim' @('marca')
+  [void][IO.Directory]::CreateDirectory((Join-Path $TSAL 'atualizacao'))
+  [IO.File]::WriteAllText((Pendente), '{"schema":')
+  $retrato = Retrato (Join-Path $LOCAL 'Programs')
+  Rodar -Entradas @($CONVITE, '1')
+  Confere 'instalador-pendente.json ilegivel conta como bloqueio' ($RC -eq 1 -and (Tem 'Fale com o Cadu') -and (Retrato (Join-Path $LOCAL 'Programs')) -ceq $retrato -and -not (Sem-Marca))
+  Preparar 'apendentenovo'
+  [void][IO.Directory]::CreateDirectory((Join-Path $TSAL 'atualizacao'))
+  [IO.File]::WriteAllText((Pendente), '{"schema":')
+  Rodar -Entradas @($CONVITE, '1')
+  Confere 'instalacao nova com instalador-pendente.json ilegivel: nao executa o instalador' ($RC -eq 1 -and (Tem 'instalador do TSA que n') -and (Nada-Instalado) -and (Texto-Falso) -ceq '')
   foreach ($par in @(
       @('vazia', '{}'), @('sem fase', '{ "schema": "tsa.instalacao.primeira/v1", "sha256": "' + $FAKE_SHA + '", "build_id": "' + $BUILD + '", "iniciada_em": "2026-10-06T12:00:00Z" }'),
       @('fase desconhecida', (Marca 'outra' $BUILD)), @('data impossivel', (Marca 'instalando' $BUILD '2026-99-99T99:99:99Z')), @('ilegivel', '{"schema":'))) {
@@ -1020,7 +1087,7 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   Registrar $CHAVE_TSA ('"' + (Join-Path $LOCAL 'Programs\orca\Uninstall TSA.exe') + '" /currentuser')
   $retrato = Retrato $LOCAL
   try { Rodar -Entradas @($CONVITE, '1') } finally { Remove-Item $CHAVE_TSA -Recurse -Force }
-  Confere 'marca com registro conflitante: nao toca em nada; caso D' ($RC -eq 1 -and (Tem 'fora do lugar') -and (Retrato $LOCAL) -ceq $retrato)
+  Confere 'marca com registro conflitante: nao toca em nada; caso D' ($RC -eq 1 -and (TemD) -and (Retrato $LOCAL) -ceq $retrato)
   Preparar 'amarcaregruim' @('marca')
   Registrar $CHAVE_TSA ('"' + (Join-Path $APP 'Uninstall TSA.exe') + '" /currentuser')
   try {
@@ -1105,13 +1172,18 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
     Registrar $par[2] ('"' + (Join-Path $LOCAL 'Programs\orca\Uninstall TSA.exe') + '" /currentuser')
     $retrato = Retrato $LOCAL
     try { Rodar -Entradas @($CONVITE, '1') } finally { Remove-Item -Path $par[2] -Recurse -Force }
-    Confere "$($par[0]): para com a frase, sem convite, sem Central, sem atualizar e sem mudar arquivo" ($RC -eq 1 -and (Tem 'fora do lugar') -and $Perguntas.Count -eq 0 -and @(Pedidos).Count -eq 0 -and (Retrato $LOCAL) -ceq $retrato)
+    Confere "$($par[0]): pasta registrada que nao existe; manda nao desinstalar nada; sem convite, sem Central, sem atualizar e sem mudar arquivo" ($RC -eq 1 -and (Tem 'diferente do esperado') -and $Perguntas.Count -eq 0 -and @(Pedidos).Count -eq 0 -and (Retrato $LOCAL) -ceq $retrato)
   }
+  Preparar 'd-identificada'
+  [void][IO.Directory]::CreateDirectory((Join-Path $LOCAL 'Programs\orca')); [IO.File]::WriteAllText((Join-Path $LOCAL 'Programs\orca\TSA.exe'), 'outro')
+  Registrar $CHAVE_TSA ('"' + (Join-Path $LOCAL 'Programs\orca\Uninstall TSA.exe') + '" /currentuser')
+  try { Rodar -Entradas @($CONVITE, '1') } finally { Remove-Item $CHAVE_TSA -Recurse -Force }
+  Confere 'instalacao de fora identificada: diz a pasta e manda desinstalar pelo Windows e rodar de novo' ($RC -eq 1 -and (Tem ('instalado em outra pasta (' + (Join-Path $LOCAL 'Programs\orca') + ')')) -and (Tem 'desinstale-o em Configura') -and -not (Tem 'diferente do esperado') -and @(Pedidos).Count -eq 0)
   foreach ($par in @(@('sem aspas e com espaco (mais de uma leitura)', ((Join-Path $APP 'Uninstall TSA.exe') + ' /currentuser')), @('vazio', ''))) {
     Preparar 'd-ilegivel'
     Registrar $CHAVE_TSA $par[1]
     try { Rodar -Entradas @($CONVITE, '1') } finally { Remove-Item $CHAVE_TSA -Recurse -Force }
-    Confere "UninstallString $($par[0]): conta como registro conflitante" ($RC -eq 1 -and (Tem 'fora do lugar') -and (Nada-Instalado))
+    Confere "UninstallString $($par[0]): conta como registro conflitante, sem mandar desinstalar" ($RC -eq 1 -and (Tem 'diferente do esperado') -and (Tem 'desinstale nada') -and (Nada-Instalado))
   }
   Preparar 'd-padrao'
   Registrar $CHAVE_TSA ('"' + (Join-Path $APP 'Uninstall TSA.exe') + '" /currentuser')
@@ -1196,10 +1268,10 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   try { [IO.File]::Move($exe, "$exe.outro") } catch { $recusas++ }
   try { [IO.Directory]::Move($pasta, "$pasta-outra") } catch { $recusas++ }
   Confere '(b) escrever, apagar, renomear o arquivo e renomear a pasta falham com o identificador aberto' ($null -ne $aberto -and $recusas -eq 4)
-  $r = [TsaNativo1]::Executar($aberto.Final, ('/S /D=' + (Join-Path $S ('destino com espa' + [char]0xE7 + 'o'))), 30000)
+  $r = [TsaNativo2]::Executar($aberto.Final, ('/S /D=' + (Join-Path $S ('destino com espa' + [char]0xE7 + 'o'))), 30000)
   Confere '(a) o instalador (falso) roda com o arquivo aberto so para leitura e sai com 0' ($r[0] -eq 0 -and $r[1] -eq 0 -and (Test-Path -LiteralPath (Join-Path $S ('destino com espa' + [char]0xE7 + 'o\TSA.exe'))))
   $aberto.Fluxo.Dispose()
-  $r = [TsaNativo1]::Executar((Join-Path $S 'nao-existe.exe'), '/S', 5000)
+  $r = [TsaNativo2]::Executar((Join-Path $S 'nao-existe.exe'), '/S', 5000)
   Confere 'arquivo que nao existe: estado 2, sem excecao' ($r[0] -eq 2)
   $env:LOCALAPPDATA = $localAntes
   # (c) matar o script com o instalador em andamento encerra o instalador e os filhos.
@@ -1216,14 +1288,16 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   Confere '(c) matar o script encerra o instalador e o filho dele' ($pids.Count -eq 2 -and $vivosAntes -eq 2 -and @($pids | Where-Object { Pid-Vivo $_ }).Count -eq 0)
   Remove-Item Env:\TSA_FAKE_LOG, Env:\TSA_FAKE_BUILD, Env:\TSA_FAKE_MODO, Env:\FAKE_EXE_PAI -ErrorAction SilentlyContinue
 
+  $idGit = Identidade-Git-Padrao ('Jos' + [char]0xE9 + ' Teste')
+  Confere 'identidade padrao do Git: nome como esta; e-mail em minusculas, sem acento, com ponto' ($idGit['user.name'] -ceq ('Jos' + [char]0xE9 + ' Teste') -and $idGit['user.email'] -ceq 'jose.teste@tsa.local' -and (Identidade-Git-Padrao '--')['user.email'] -ceq 'usuario@tsa.local' -and (Identidade-Git-Padrao ('  ' + [char]0xC7 + 'a_b..C9 '))['user.email'] -ceq 'ca.b.c9@tsa.local')
   Write-Host '22. Gerenciador de Credenciais (secao 6.2) e segredo fora de argumento, arquivo e saida (T-INS-25)'
   Limpar-Cred
   $seguro = New-Object System.Security.SecureString
   foreach ($c in $CONVITE.ToCharArray()) { $seguro.AppendChar($c) }
-  [TsaNativo1]::CredGravar('tsa-convite-pendente', 'convite', $seguro)
+  [TsaNativo2]::CredGravar('tsa-convite-pendente', 'convite', $seguro)
   Confere 'gravar, ler e apagar o convite pendente numa conta sem administrador, sem janela' ([TsaTesteCred]::Ler('tsa-convite-pendente') -ceq "convite|1|2|$CONVITE" -and [TsaTesteCred]::Apagar('tsa-convite-pendente') -and $null -eq [TsaTesteCred]::Ler('tsa-convite-pendente'))
   [TsaTesteCred]::Gravar("tsa-atualizador:$UUID", $UUID, $CRED)
-  Confere 'a credencial de atualizacao e achada pelo alvo tsa-atualizador:<installation_id>' ([TsaNativo1]::CredExiste("tsa-atualizador:$UUID") -and -not [TsaNativo1]::CredExiste('tsa-atualizador:00000000-0000-4000-8000-000000000000'))
+  Confere 'a credencial de atualizacao e achada pelo alvo tsa-atualizador:<installation_id>' ([TsaNativo2]::CredExiste("tsa-atualizador:$UUID") -and -not [TsaNativo2]::CredExiste('tsa-atualizador:00000000-0000-4000-8000-000000000000'))
   Limpar-Cred
   $eu = New-Object System.Security.Principal.WindowsPrincipal ([System.Security.Principal.WindowsIdentity]::GetCurrent())
   Write-Host "       conta: $([Environment]::UserName); administrador: $($eu.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)); sessao interativa: $([Environment]::UserInteractive); recusas de ambiente trocadas: $([bool]$SemAmbiente)"
