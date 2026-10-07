@@ -349,7 +349,7 @@ static class InstaladorFalso {
     if (!string.IsNullOrEmpty(reg)) { try { File.AppendAllText(reg, s + "\r\n"); } catch (Exception) { } }
   }
   static int Main() {
-    string cl = Environment.CommandLine;
+    string cl = Environment.CommandLine.TrimEnd();
     string eu = Process.GetCurrentProcess().MainModule.FileName;
     string nome = Path.GetFileName(eu);
     int pid = Process.GetCurrentProcess().Id;
@@ -359,7 +359,9 @@ static class InstaladorFalso {
     if (cl.EndsWith(" /pai-tardio", StringComparison.Ordinal)) {
       string sinal = Environment.GetEnvironmentVariable("TSA_FAKE_SINAL");
       while (!File.Exists(sinal)) Thread.Sleep(20);
-      ProcessStartInfo f = new ProcessStartInfo(eu, "/filho"); f.UseShellExecute = false; Process.Start(f);
+      // Com TSA_FAKE_FORA, o filho roda de um executavel fora das pastas vigiadas.
+      string fora = Environment.GetEnvironmentVariable("TSA_FAKE_FORA");
+      ProcessStartInfo f = new ProcessStartInfo(string.IsNullOrEmpty(fora) ? eu : fora, "/filho"); f.UseShellExecute = false; Process.Start(f);
       return 0;
     }
     if (string.Equals(nome, "Uninstall TSA.exe", StringComparison.OrdinalIgnoreCase)) {
@@ -913,8 +915,9 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
   [IO.File]::Copy($FAKE_EXE, (Join-Path $velho 'tsa-windows-x64.exe'))
   $orfao = Start-Process -FilePath (Join-Path $velho 'tsa-windows-x64.exe') -ArgumentList '/filho' -PassThru
   Start-Sleep -Milliseconds 800
+  $orfaoVivo = Pid-Vivo $orfao.Id
   Rodar -Entradas @($CONVITE, '1')
-  Confere 'instalador orfao em tmp\ e encerrado com a trava na mao; depois limpa e instala' ($RC -eq 0 -and -not (Pid-Vivo $orfao.Id) -and (Instalado) -and (Sem-Marca))
+  Confere 'instalador orfao em tmp\ e encerrado com a trava na mao; depois limpa e instala' ($RC -eq 0 -and $orfaoVivo -and -not (Pid-Vivo $orfao.Id) -and (Instalado) -and (Sem-Marca))
   # Filho criado depois da primeira consulta, com o pai saindo logo em seguida.
   Preparar 'amarcatardio' @('marca')
   $velho = Join-Path $TSAL 'tmp\velho'; [void][IO.Directory]::CreateDirectory($velho)
@@ -934,8 +937,32 @@ exit [TsaTeclas]::Digitar($Alvo, $texto + "`r")
     return $r
   }
   try { Rodar -Entradas @($CONVITE, '1') } finally { Remove-Item function:Get-CimInstance; Remove-Item Env:\TSA_FAKE_SINAL }
-  $tardios = @(Pids-Do-Log (Join-Path $S 'falso.log'))
-  Confere 'filho nascido entre a consulta e a saida do pai e achado e encerrado antes da limpeza' ($RC -eq 0 -and $tardios.Count -ge 1 -and @($tardios | Where-Object { Pid-Vivo $_ }).Count -eq 0 -and (Instalado) -and (Sem-Marca))
+  $tardios = @([regex]::Matches((Texto-Falso), 'filho pid=([0-9]+)') | ForEach-Object { [int]$_.Groups[1].Value })
+  Confere 'filho nascido entre a consulta e a saida do pai e achado e encerrado antes da limpeza' ($RC -eq 0 -and $tardios.Count -eq 1 -and @($tardios | Where-Object { Pid-Vivo $_ }).Count -eq 0 -and (Instalado) -and (Sem-Marca))
+  # O candidato sai antes de dar para abrir o identificador e deixa um filho fora das pastas vigiadas.
+  Preparar 'amarcafoge' @('marca')
+  $velho = Join-Path $TSAL 'tmp\velho'; [void][IO.Directory]::CreateDirectory($velho)
+  [IO.File]::Copy($FAKE_EXE, (Join-Path $velho 'tsa-windows-x64.exe'))
+  $foraExe = Join-Path $S 'fora-das-pastas.exe'; [IO.File]::Copy($FAKE_EXE, $foraExe)
+  $sinal = Join-Path $S 'sinal.txt'
+  $env:TSA_FAKE_SINAL = $sinal; $env:TSA_FAKE_FORA = $foraExe; $env:TSA_FAKE_LOG = Join-Path $S 'falso.log'
+  # O teste nao pode segurar identificador do pai: com ele aberto, o processo ainda daria para abrir.
+  $pai = Start-Process -FilePath (Join-Path $velho 'tsa-windows-x64.exe') -ArgumentList '/pai-tardio' -PassThru
+  $script:PaiId = $pai.Id; $pai.Dispose(); $pai = $null; [GC]::Collect()
+  Start-Sleep -Milliseconds 800
+  $script:VezesCim = 0
+  function Get-CimInstance {
+    $r = & $CimOriginal @args
+    $script:VezesCim++
+    if ($script:VezesCim -eq 2) { [IO.File]::WriteAllText($sinal, ''); for ($i = 0; $i -lt 100 -and (Pid-Vivo $script:PaiId); $i++) { Start-Sleep -Milliseconds 50 }; Start-Sleep -Milliseconds 300 }
+    return $r
+  }
+  $retrato = Retrato (Join-Path $LOCAL 'Programs')
+  try { Rodar -Entradas @($CONVITE, '1') -Ajustes @{ SobraS = 4 } } finally { Remove-Item function:Get-CimInstance; Remove-Item Env:\TSA_FAKE_SINAL, Env:\TSA_FAKE_FORA }
+  $soltos = @([regex]::Matches((Texto-Falso), 'filho pid=([0-9]+)') | ForEach-Object { [int]$_.Groups[1].Value })
+  $vivoDepois = ($soltos.Count -eq 1 -and (Pid-Vivo $soltos[0]))
+  $soltos | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+  Confere 'candidato que some antes do identificador, com filho vivo fora das pastas: a limpeza fica bloqueada' ($RC -eq 1 -and (Tem 'limpar a instala') -and $vivoDepois -and (Retrato (Join-Path $LOCAL 'Programs')) -ceq $retrato -and -not (Sem-Marca))
   foreach ($par in @(
       @('vazia', '{}'), @('sem fase', '{ "schema": "tsa.instalacao.primeira/v1", "sha256": "' + $FAKE_SHA + '", "build_id": "' + $BUILD + '", "iniciada_em": "2026-10-06T12:00:00Z" }'),
       @('fase desconhecida', (Marca 'outra' $BUILD)), @('data impossivel', (Marca 'instalando' $BUILD '2026-99-99T99:99:99Z')), @('ilegivel', '{"schema":'))) {

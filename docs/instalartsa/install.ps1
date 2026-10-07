@@ -1025,6 +1025,10 @@ function Encerrar-Sobras {
   # Windows não dá aquele número a outro processo. Assim "filho de um seguido" não se confunde
   # com filho de um processo alheio, e o encerramento atinge a mesma instância.
   $seguidos = New-Object 'System.Collections.Generic.Dictionary[int,object]'
+  # Candidato que saiu antes de dar para abrir o identificador: fica o número e a hora de criação.
+  # Enquanto existir processo vivo que descende dele, a limpeza não é liberada (e ele não é
+  # encerrado: sem identificador, o parentesco não é certo).
+  $perdidos = New-Object 'System.Collections.Generic.Dictionary[int,datetime]'
   $fim = [DateTime]::UtcNow.AddSeconds($script:I.SobraS)
   try {
     while ($true) {
@@ -1062,12 +1066,36 @@ function Encerrar-Sobras {
               $achouNovo = $true
               $novos++
               $alvo = $null
+            } else {
+              # Outro processo já usa esse número: o candidato saiu.
+              $semIdentidade = $true
+              $perdidos[$id] = $p.CreationDate
             }
           } catch {
-            # Já saiu (some na próxima consulta) ou não deu para abrir: sem identidade, não conclui.
+            # Já saiu ou não deu para abrir: sem identidade, não conclui nesta volta.
             $semIdentidade = $true
+            $perdidos[$id] = $p.CreationDate
           } finally { if ($null -ne $alvo) { $alvo.Dispose() } }
         }
+      }
+      # Descendentes vivos de um candidato perdido seguram a conclusão; entram na lista de
+      # perdidos para os filhos deles também segurarem.
+      $soltos = 0
+      $mudou = $true
+      while ($mudou) {
+        $mudou = $false
+        foreach ($p in $procs) {
+          $id = [int]$p.ProcessId; $pai = [int]$p.ParentProcessId
+          if ($id -eq $PID -or $seguidos.ContainsKey($id) -or -not ($p.CreationDate -is [datetime])) { continue }
+          if ($perdidos.ContainsKey($pai) -and $p.CreationDate -ge $perdidos[$pai] -and -not ($perdidos.ContainsKey($id) -and $perdidos[$id] -eq $p.CreationDate)) {
+            $perdidos[$id] = $p.CreationDate
+            $mudou = $true
+          }
+        }
+      }
+      foreach ($p in $procs) {
+        $id = [int]$p.ProcessId
+        if ($id -ne $PID -and -not $seguidos.ContainsKey($id) -and $perdidos.ContainsKey($id) -and $p.CreationDate -is [datetime] -and $perdidos[$id] -eq $p.CreationDate) { $soltos++ }
       }
       $restam = 0
       foreach ($s in @($seguidos.Values)) {
@@ -1075,9 +1103,9 @@ function Encerrar-Sobras {
         try { $saiu = $s.Proc.HasExited } catch { $saiu = $false }
         if (-not $saiu) { $restam++; try { $s.Proc.Kill() } catch { } }
       }
-      if ($sairamAntes -and $novos -eq 0 -and $restam -eq 0 -and -not $semIdentidade) { return $true }
+      if ($sairamAntes -and $novos -eq 0 -and $restam -eq 0 -and $soltos -eq 0 -and -not $semIdentidade) { return $true }
       if ([DateTime]::UtcNow -ge $fim) { return $false }
-      if ($restam -gt 0 -or $semIdentidade) { Start-Sleep -Milliseconds 500 }
+      if ($restam -gt 0 -or $soltos -gt 0 -or $semIdentidade) { Start-Sleep -Milliseconds 500 }
     }
   } finally {
     foreach ($s in @($seguidos.Values)) { try { $s.Proc.Dispose() } catch { } }
