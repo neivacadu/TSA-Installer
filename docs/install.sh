@@ -9,6 +9,8 @@
 #    Python 3.10+, Node, PostgreSQL ligado, ffmpeg (com o filtro drawtext), pillow,
 #    Antigravity CLI (agy), yt-dlp, whisper-cpp, o modelo de transcricao, o Handy e o
 #    VoiceStudio. So instala o que falta, e so atualiza o yt-dlp velho.
+#    Para o ACE Dev: a skill RES v0.4.0 (SHA-256 conferido) e o comando tsa-rea-local, que
+#    registra o MCP rea-agents@6.8.0 so no worktree em que roda; nunca global.
 #    Falha aqui nao desfaz o app. O login do agy e do colaborador, nunca do script.
 # 3. Deixa o Handy e o VoiceStudio configurados, sem sobrescrever quem ja usa os dois, e
 #    termina com o passo guiado das permissoes: abre as telas de Microfone e de
@@ -939,6 +941,15 @@ ensure_higgsfield(){
 # pelo tsa-editor --instalar do app.
 AUTOEDITOR_VERSAO="31.6.0"
 CAPCUT_VERSAO="0.25.0"
+# Estudo de produto de terceiro (DNA DEC-46, DNA-DEV-14): skill RES e MCP REA, versoes fixas.
+RES_VERSAO="v0.4.0"
+RES_COMMIT="1d05d9c4a9f96d3cd94e9fa49609f98d7e4b4563"
+RES_URL="${TSA_RES_URL:-https://codeload.github.com/alextnetto/res/tar.gz/$RES_COMMIT}"
+RES_SHA256="${TSA_RES_SHA256:-f8ff302f83eeaa97a991eca03c3978464618418d50c42b94979fe6b25c6dddec}"
+RES_DIR="$HOME/.claude/skills/reverse-engineering-saas"
+REA_VERSAO="6.8.0"
+REA_NODE_FAIXA="^22.23.4 || ^24.22.1 || >=26.12.1"
+REA_HELPER="$HOME/.local/bin/tsa-rea-local"
 versao_de(){ "$1" --version </dev/null 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1; }
 
 # auto-editor (Unlicense): corte de silencio e sequencia para Premiere, Resolve e Final Cut.
@@ -982,6 +993,86 @@ ensure_capcut(){
     mark_ok "capcut-cli $CAPCUT_VERSAO: instalado${v:+ (a versao anterior era $v)}"
   else
     mark_aviso "capcut-cli: a instalacao falhou; o projeto do CapCut pelo agente fica indisponivel." "npm install -g capcut-cli@$CAPCUT_VERSAO"
+  fi
+  return 0
+}
+
+# RES (MIT, alextnetto/res): skill reverse-engineering-saas, do commit da tag fixada, com o
+# SHA-256 do pacote conferido. Pasta que ja existe sem a marca da TSA e de quem a instalou:
+# fica como esta, com aviso. A marca .tsa-versao diz a versao que o instalador pos.
+ensure_res(){
+  local marca="$RES_DIR/.tsa-versao" tmp sha src
+  if [ -f "$marca" ] && [ "$(cat "$marca" 2>/dev/null)" = "$RES_VERSAO" ]; then
+    mark_ok "skill RES $RES_VERSAO: ja estava pronta"
+    return 0
+  fi
+  if [ -e "$RES_DIR" ] && [ ! -f "$marca" ]; then
+    mark_aviso "skill RES: $RES_DIR ja existe e nao foi posta pela TSA; ficou como estava. A versao conferida e a $RES_VERSAO." "confira a pasta; para a TSA instalar, mova-a e rode o instalador de novo"
+    return 0
+  fi
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/tsa-res.XXXXXX")"
+  if ! curl -fsSL "$RES_URL" -o "$tmp/res.tar.gz" </dev/null 2>/dev/null; then
+    rm -rf "$tmp"
+    mark_aviso "skill RES: o download falhou; o estudo de produto pelo ACE Dev fica indisponivel." "$REPAIR_CMD"
+    return 0
+  fi
+  sha="$(shasum -a 256 "$tmp/res.tar.gz" | awk '{print $1}')"
+  if [ "$sha" != "$RES_SHA256" ]; then
+    rm -rf "$tmp"
+    mark_aviso "skill RES: o pacote baixado nao confere com o SHA-256 fixado; nada foi instalado." "$REPAIR_CMD"
+    return 0
+  fi
+  src="$tmp/res-$RES_COMMIT"
+  if ! tar -xzf "$tmp/res.tar.gz" -C "$tmp" 2>/dev/null || [ ! -f "$src/skills/reverse-engineering-saas/SKILL.md" ]; then
+    rm -rf "$tmp"
+    mark_aviso "skill RES: o pacote nao tem a skill esperada; nada foi instalado." "$REPAIR_CMD"
+    return 0
+  fi
+  cp "$src/LICENSE" "$src/skills/reverse-engineering-saas/LICENSE"
+  printf '%s\n' "$RES_VERSAO" >"$src/skills/reverse-engineering-saas/.tsa-versao"
+  mkdir -p "$(dirname "$RES_DIR")"
+  rm -rf "$RES_DIR.tsa-novo"
+  mv "$src/skills/reverse-engineering-saas" "$RES_DIR.tsa-novo"
+  rm -rf "$RES_DIR"
+  mv "$RES_DIR.tsa-novo" "$RES_DIR"
+  rm -rf "$tmp"
+  mark_ok "skill RES $RES_VERSAO: instalada"
+  return 0
+}
+
+# Node dentro da faixa que o rea-agents declara: ^22.23.4 || ^24.22.1 || >=26.12.1.
+node_serve_rea(){
+  local v ma mi pa
+  v="$(node --version </dev/null 2>/dev/null | sed 's/^v//')"
+  ma="${v%%.*}"; v="${v#*.}"; mi="${v%%.*}"; pa="${v#*.}"; pa="${pa%%[!0-9]*}"
+  case "$ma$mi$pa" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$ma" -eq 22 ]; then [ "$mi" -gt 23 ] || { [ "$mi" -eq 23 ] && [ "$pa" -ge 4 ]; }; return; fi
+  if [ "$ma" -eq 24 ]; then [ "$mi" -gt 22 ] || { [ "$mi" -eq 22 ] && [ "$pa" -ge 1 ]; }; return; fi
+  [ "$ma" -gt 26 ] || { [ "$ma" -eq 26 ] && { [ "$mi" -gt 12 ] || { [ "$mi" -eq 12 ] && [ "$pa" -ge 1 ]; }; }; }
+}
+
+# REA (MIT, rea-agents no npm): nunca global e nunca `rea setup`, que grava no ~/.claude.json
+# e custa cerca de 110 mil tokens por sessao. O instalador so poe o comando tsa-rea-local,
+# que o ACE Dev roda dentro do proprio worktree para registrar o MCP em escopo local.
+ensure_rea_local(){
+  mkdir -p "$(dirname "$REA_HELPER")"
+  cat >"$REA_HELPER" <<REA_EOF
+#!/bin/bash
+# Gerado pelo instalador do TSA. Registra o MCP rea (rea-agents@$REA_VERSAO) so nesta pasta,
+# em escopo local do Claude Code. Rode dentro do worktree do ACE Dev (DNA-DEV-14).
+set -euo pipefail
+[ "\$PWD" != "\$HOME" ] || { echo "rode dentro do worktree do ACE Dev, nao na home" >&2; exit 2; }
+command -v claude >/dev/null 2>&1 || { echo "claude nao encontrado" >&2; exit 1; }
+if claude mcp get rea >/dev/null 2>&1; then echo "rea ja registrado aqui"; exit 0; fi
+exec claude mcp add --scope local rea -- npx -y rea-agents@$REA_VERSAO mcp
+REA_EOF
+  chmod +x "$REA_HELPER"
+  if ! command -v node >/dev/null 2>&1; then
+    mark_aviso "REA $REA_VERSAO: Node nao encontrado; o estudo de app instalado pelo ACE Dev fica indisponivel." "brew install node"
+  elif node_serve_rea; then
+    mark_ok "REA $REA_VERSAO: Node $(node --version </dev/null 2>/dev/null) serve; registro local com $REA_HELPER"
+  else
+    mark_aviso "REA $REA_VERSAO: o Node $(node --version </dev/null 2>/dev/null) esta fora da faixa $REA_NODE_FAIXA; o REA roda com aviso e sem garantia." "brew upgrade node"
   fi
   return 0
 }
@@ -1562,6 +1653,8 @@ prepare_simulator(){
   ensure_higgsfield || true
   ensure_autoeditor || true
   ensure_capcut || true
+  ensure_res || true
+  ensure_rea_local || true
   ensure_ytdlp || true
   ensure_whisper || true
   ensure_whisper_model || true

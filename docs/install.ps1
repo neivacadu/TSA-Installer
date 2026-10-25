@@ -6,6 +6,8 @@
 #    Node LTS (zip oficial, SHA-256 conferido), Git para Windows portatil (o Claude Code e os hooks
 #    do TSA usam o Git Bash), Python 3.12 (os hooks do TSA sao Python) e o agente: Claude Code
 #    pelo instalador oficial, ou Codex pelo npm.
+#    Para o ACE Dev: a skill RES v0.4.0 (SHA-256 conferido) e o tsa-rea-local.cmd, que registra o
+#    MCP rea-agents@6.8.0 so no worktree em que roda, dentro de cmd.exe /d /c; nunca global.
 #    Poe %USERPROFILE%\.local\bin no PATH do usuario: e onde o TSA escreve cofre, tsa-jev e
 #    tsa-publicar.
 # 3. Baixa o instalador do TSA (.exe) da release, confere o SHA-256 e instala em modo silencioso
@@ -39,6 +41,12 @@ function Set-TsaGlobals {
   $script:Tmp = Join-Path $env:TEMP ("tsa-install-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
   $script:Avisos = New-Object System.Collections.Generic.List[string]
   $script:Feitos = New-Object System.Collections.Generic.List[string]
+  # Estudo de produto de terceiro (DNA DEC-46, DNA-DEV-14): skill RES e MCP REA, versoes fixas.
+  $script:ResVersao = 'v0.4.0'
+  $script:ResCommit = '1d05d9c4a9f96d3cd94e9fa49609f98d7e4b4563'
+  $script:ResUrl = "https://codeload.github.com/alextnetto/res/zip/$script:ResCommit"
+  $script:ResSha256 = 'bbe44cb145eea6fed6ef7d0e1acea8f1ce326cc7d9509375f69728cce35d9212'
+  $script:ReaVersao = '6.8.0'
 }
 
 function Say([string]$texto) { Write-Host "==> $texto" }
@@ -308,6 +316,58 @@ function Install-Midia {
   }
 }
 
+# RES (MIT, alextnetto/res): skill reverse-engineering-saas do commit da tag fixada, SHA-256 do zip
+# conferido. Pasta sem a marca .tsa-versao e de quem a instalou: fica como esta. A RES v0.4.0 ainda
+# nao tem as correcoes de Windows da origem (PRs 7, 14 e 15); validar na VM de teste antes do time.
+function Install-Res {
+  $dir = Join-Path $env:USERPROFILE '.claude\skills\reverse-engineering-saas'
+  $marca = Join-Path $dir '.tsa-versao'
+  if ((Test-Path $marca) -and ((Get-Content -Raw -LiteralPath $marca).Trim() -eq $script:ResVersao)) { Feito "skill RES $($script:ResVersao) ja instalada"; return }
+  if ((Test-Path $dir) -and -not (Test-Path $marca)) { Aviso "skill RES: $dir ja existe e nao foi posta pela TSA; ficou como estava"; return }
+  $zip = Join-Path $script:Tmp 'res.zip'
+  try { Baixa $script:ResUrl $zip } catch { Aviso 'skill RES: o download falhou; o estudo de produto pelo ACE Dev fica indisponivel'; return }
+  if ((Sha256 $zip) -ne $script:ResSha256) { Aviso 'skill RES: o pacote baixado nao confere com o SHA-256 fixado; nada foi instalado'; return }
+  $ext = Join-Path $script:Tmp 'res'
+  Extrai $zip $ext
+  $src = Join-Path $ext "res-$($script:ResCommit)"
+  $skill = Join-Path $src 'skills\reverse-engineering-saas'
+  if (-not (Test-Path (Join-Path $skill 'SKILL.md'))) { Aviso 'skill RES: o pacote nao tem a skill esperada; nada foi instalado'; return }
+  Copy-Item -LiteralPath (Join-Path $src 'LICENSE') -Destination (Join-Path $skill 'LICENSE')
+  Set-Content -LiteralPath (Join-Path $skill '.tsa-versao') -Value $script:ResVersao -Encoding ascii
+  New-Item -ItemType Directory -Force -Path (Split-Path $dir) | Out-Null
+  if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+  Copy-Item -LiteralPath $skill -Destination $dir -Recurse
+  Feito "skill RES $($script:ResVersao) instalada (Windows ainda nao validado na VM de teste)"
+}
+
+# Node dentro da faixa que o rea-agents declara: ^22.23.4 || ^24.22.1 || >=26.12.1.
+function Test-NodeRea([string]$versao) {
+  try { $v = [version]($versao -replace '^v', '') } catch { return $false }
+  return (($v.Major -eq 22 -and $v -ge [version]'22.23.4') -or ($v.Major -eq 24 -and $v -ge [version]'24.22.1') -or ($v -ge [version]'26.12.1'))
+}
+
+# REA (MIT, rea-agents no npm): nunca global e nunca `rea setup`, que grava no ~/.claude.json e custa
+# cerca de 110 mil tokens por sessao. So poe o tsa-rea-local.cmd, que o ACE Dev roda dentro do proprio
+# worktree. No Windows o npx vai dentro de cmd.exe /d /c.
+function Install-ReaLocal {
+  $cmd = Join-Path $script:LocalBin 'tsa-rea-local.cmd'
+  $linhas = @(
+    '@echo off',
+    "rem Gerado pelo instalador do TSA. Registra o MCP rea (rea-agents@$($script:ReaVersao)) so nesta pasta,",
+    'rem em escopo local do Claude Code. Rode dentro do worktree do ACE Dev (DNA-DEV-14).',
+    'if /i "%CD%"=="%USERPROFILE%" (echo rode dentro do worktree do ACE Dev, nao na home & exit /b 2)',
+    'claude mcp get rea >nul 2>&1 && (echo rea ja registrado aqui & exit /b 0)',
+    "claude mcp add --scope local rea -- cmd.exe /d /c npx -y rea-agents@$($script:ReaVersao) mcp"
+  )
+  Set-Content -LiteralPath $cmd -Value $linhas -Encoding ascii
+  $node = Find-Real 'node'
+  if (-not $node) { $node = Get-Command (Join-Path $script:NodeDir 'node.exe') -ErrorAction SilentlyContinue }
+  if (-not $node) { Aviso "REA $($script:ReaVersao): Node nao encontrado; o estudo de app instalado pelo ACE Dev fica indisponivel"; return }
+  $versao = (& $node.Source --version)
+  if (Test-NodeRea $versao) { Feito "REA $($script:ReaVersao): Node $versao serve; registro local com $cmd" }
+  else { Aviso "REA $($script:ReaVersao): o Node $versao esta fora da faixa ^22.23.4 || ^24.22.1 || >=26.12.1; o REA roda com aviso e sem garantia" }
+}
+
 function Install-Prereqs {
   New-Item -ItemType Directory -Force -Path $script:Programs, $script:LocalBin | Out-Null
   Add-UserPath $script:LocalBin
@@ -322,6 +382,8 @@ function Install-Prereqs {
     'ambos' { Install-Claude; Install-Codex }
     default { Aviso "TSA_AGENTE=$($script:Agente) nao e claude, codex nem ambos; nenhum agente instalado" }
   }
+  Install-Res
+  Install-ReaLocal
 }
 
 function Get-ExpectedSha {

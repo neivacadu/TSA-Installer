@@ -19,7 +19,7 @@ trap cleanup EXIT
 # utilitarios reais que o instalador usa no modo so-preparacao
 SYSBIN="$WORK/sysbin"
 mkdir -p "$SYSBIN"
-for t in uname dirname basename readlink grep sed sleep cat mkdir cp mv touch chmod mktemp rm id ln head awk find shasum; do
+for t in uname dirname basename readlink grep sed sleep cat mkdir cp mv touch chmod mktemp rm id ln head awk find shasum tar gzip; do
   ln -s "$(command -v "$t")" "$SYSBIN/$t"
 done
 
@@ -29,6 +29,14 @@ VS_SHA="$(head -c 2048 /dev/zero | shasum -a 256 | awk '{print $1}')"
 TSA_SHA="$(head -c 4096 /dev/zero | shasum -a 256 | awk '{print $1}')"
 # sha256 real dos 1024 bytes que o curl falso grava como modelo Silero
 SIL_SHA="$(head -c 1024 /dev/zero | shasum -a 256 | awk '{print $1}')"
+
+# pacote falso da skill RES, no formato do codeload (res-<commit>/...), com sha256 real
+RES_COMMIT_T="1d05d9c4a9f96d3cd94e9fa49609f98d7e4b4563"
+mkdir -p "$WORK/respkg/res-$RES_COMMIT_T/skills/reverse-engineering-saas"
+echo "---" >"$WORK/respkg/res-$RES_COMMIT_T/skills/reverse-engineering-saas/SKILL.md"
+echo "MIT License" >"$WORK/respkg/res-$RES_COMMIT_T/LICENSE"
+tar -czf "$WORK/res.tar.gz" -C "$WORK/respkg" "res-$RES_COMMIT_T"
+RES_SHA="$(shasum -a 256 "$WORK/res.tar.gz" | awk '{print $1}')"
 
 # porta livre para os cenarios normais; a porta real 5432 desta maquina fica fora do teste
 free_port(){
@@ -172,6 +180,13 @@ case "$*" in
     [ -n "$out" ] || exit 0
     head -c "${FAKE_MODEL_WRITE:-4096}" /dev/zero >"$out"
     ;;
+  *alextnetto/res*)
+    prev=""; out=""
+    for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+    [ -n "$out" ] || exit 0
+    [ "${FAKE_RES_FAIL:-0}" = 1 ] && exit 22
+    cp "$FAKE_RES_TGZ" "$out"
+    ;;
   *ggml-silero*)
     prev=""; out=""
     for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
@@ -229,12 +244,17 @@ setup(){
   S="$WORK/$1"; shift
   mkdir -p "$S/userbin" "$S/prefix/bin" "$S/prefix/opt" "$S/state" "$S/home" "$S/Applications"
   : >"$S/log"
+  mkdir -p "$S/home/.claude/skills/reverse-engineering-saas"
+  echo v0.4.0 >"$S/home/.claude/skills/reverse-engineering-saas/.tsa-versao"
   BREW_ON_PATH=1
   RUNS=0
   local b
   for b in "$@"; do
     case "$b" in
       pg_on) touch "$S/state/pg_running" ;;
+      sem_res) rm -rf "$S/home/.claude/skills/reverse-engineering-saas" ;;
+      res_alheia) rm -f "$S/home/.claude/skills/reverse-engineering-saas/.tsa-versao"
+        echo "minha" >"$S/home/.claude/skills/reverse-engineering-saas/SKILL.md" ;;
       brew) cp "$TPL/brew" "$S/prefix/bin/brew" ;;
       agy_login) mkdir -p "$S/home/.gemini"; echo '{"token":"falso"}' >"$S/home/.gemini/oauth_creds.json" ;;
       agy_login_novo) mkdir -p "$S/home/.gemini/antigravity-cli"; echo 'falso' >"$S/home/.gemini/antigravity-cli/antigravity-oauth-token" ;;
@@ -297,6 +317,7 @@ run(){
     TSA_EDITOR_PY_ROOTS="$S/prefix/opt" TSA_AGY_SECURITY="$S/userbin/security" \
     TSA_OPEN="$S/userbin/open" TSA_PERM_TIMEOUT="${PERM_TIMEOUT:-2}" \
     FAKE_TSA_VOLUME="$S/volume-tsa" FAKE_TSA_SHA="$TSA_SHA" \
+    FAKE_RES_TGZ="$WORK/res.tar.gz" TSA_RES_SHA256="$RES_SHA" \
     "$@" /bin/bash "$SCRIPT" >"$OUT" 2>&1 </dev/null &
   local pid=$! n=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -1064,6 +1085,52 @@ check "diz que o TSA e so chip Apple" 'out_has "O TSA roda só em Mac com chip A
 check "nao baixa nada" '! grep -q "^curl" "$S/log"'
 check "nao instala o app" '[ ! -d "$S/Applications/TSA.app" ]'
 check "nao prepara o simulador" '! grep -q "^brew" "$S/log"'
+
+echo "70. skill RES e REA: instala a RES fixada, uma vez, e poe o tsa-rea-local"
+setup res $BASE sem_res curl
+run2
+RD="$S/home/.claude/skills/reverse-engineering-saas"
+check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
+check "baixa a RES pelo commit fixado na primeira" 'grep -q "^curl -fsSL https://codeload.github.com/alextnetto/res/tar.gz/$RES_COMMIT_T" "$S/log1"'
+check "instala a skill com LICENSE e a marca da versao" '[ -f "$RD/SKILL.md" ] && [ -f "$RD/LICENSE" ] && [ "$(cat "$RD/.tsa-versao")" = v0.4.0 ]'
+check "segunda execucao nao baixa de novo" '! grep -q "alextnetto/res" "$S/log" && out_has "skill RES v0.4.0: ja estava pronta"'
+H="$S/home/.local/bin/tsa-rea-local"
+check "tsa-rea-local existe e e executavel" '[ -x "$H" ]'
+check "tsa-rea-local registra so em escopo local, na versao fixada" 'grep -q "claude mcp add --scope local rea -- npx -y rea-agents@6.8.0 mcp" "$H"'
+check "tsa-rea-local nunca usa rea setup nem escopo global" '! grep -qE "rea setup|--scope (user|project)" "$H"'
+check "tsa-rea-local recusa a home" 'grep -q "\$PWD\" != \"\$HOME" "$H"'
+check "Node 22.0.0 fora da faixa do REA vira aviso" 'out_has "REA 6.8.0: o Node v22.0.0 esta fora da faixa"'
+check "o resumo continua sem pendencia" 'out_has "Tudo pronto"'
+
+echo "71. skill RES: sha errado ou download falho nao instala nada"
+setup ressha $BASE sem_res curl
+run TSA_RES_SHA256=0000
+check "sai 0" '[ $RC = 0 ]'
+check "avisa que o pacote nao confere" 'out_has "skill RES: o pacote baixado nao confere com o SHA-256 fixado"'
+check "nao cria a pasta da skill" '[ ! -e "$S/home/.claude/skills/reverse-engineering-saas" ]'
+setup resfalha $BASE sem_res curl
+run FAKE_RES_FAIL=1
+check "download falho vira aviso, sem pasta" 'out_has "skill RES: o download falhou" && [ ! -e "$S/home/.claude/skills/reverse-engineering-saas" ]'
+
+echo "72. skill RES: pasta de outra pessoa fica como esta"
+setup resalheia $BASE res_alheia
+run
+check "sai 0 e avisa" '[ $RC = 0 ] && out_has "nao foi posta pela TSA; ficou como estava"'
+check "nao baixa nem mexe na pasta" '! grep -q "alextnetto/res" "$S/log" && [ "$(cat "$S/home/.claude/skills/reverse-engineering-saas/SKILL.md")" = minha ]'
+
+echo "73. REA: Node dentro da faixa"
+for v in v22.23.4 v24.22.1 v26.12.1 v27.0.0; do
+  setup "reanode${v//./_}" $BASE
+  printf '#!/bin/bash\necho "node $*" >>"$FAKE_LOG"\necho %s\n' "$v" >"$S/userbin/node"; chmod +x "$S/userbin/node"
+  run
+  check "Node $v serve ao REA" 'out_has "REA 6.8.0: Node $v serve"'
+done
+for v in v22.23.3 v24.22.0 v25.9.0 v26.7.0; do
+  setup "reavelho${v//./_}" $BASE
+  printf '#!/bin/bash\necho "node $*" >>"$FAKE_LOG"\necho %s\n' "$v" >"$S/userbin/node"; chmod +x "$S/userbin/node"
+  run
+  check "Node $v fora da faixa vira aviso" 'out_has "REA 6.8.0: o Node $v esta fora da faixa"'
+done
 
 echo "resultado: $PASS ok, $FAIL falhas"
 [ "$FAIL" = 0 ]
