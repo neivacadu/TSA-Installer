@@ -4,8 +4,8 @@
   "appRepository": "aifocusdev/AceOrca",
   "appRef": "tsa/integracao",
   "dnaRepository": "neivacadu/DNA-ACE-TSA",
-  "dnaApprovedCommit": "96dbeba921f610f44e6430aff5f247a6578f37c1",
-  "dnaReleaseVersion": "1.0.24",
+  "dnaApprovedCommit": "edeb5b1077cb381047452ae3b353abf6fbdb09cf",
+  "dnaReleaseVersion": "1.0.25",
   "dnaManifestUrl": "https://ace.acetsia.com/inteligencia/v1/dna/release",
   "appId": "com.trafegosa.orca-tsa",
   "channels": [
