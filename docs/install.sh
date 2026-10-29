@@ -688,13 +688,20 @@ find_numpy(){
 }
 
 # O brew tem o numpy, mas o python3 do PATH e outro (python.org, pyenv, conda, sistema).
+# O python3 do keg mora em opt/<formula>/bin; o libexec/bin so tem python, pip e pydoc.
+# O pip so e sugerido para Python nao gerenciado: com EXTERNALLY-MANAGED (outro brew, por
+# exemplo) o pip recusa, e o /usr/bin/python3 sem as ferramentas de linha de comando nem roda.
 numpy_path_divergente(){
-  local dir quem="nao tem o numpy"; dir="$(dirname "$BREW_NUMPY_PY")"
+  local prefix="$BREW_PREFIX" quem="nao tem o numpy" fix pip_ok=0
+  if [ -z "$prefix" ] && [ -n "$BREW" ]; then prefix="$(dirname "$(dirname "$BREW")")"; fi
+  fix="ponha o Python do Homebrew na frente do PATH: export PATH=\"$prefix/opt/$PY_FORMULA/bin:\$PATH\" (no ~/.zprofile)"
   if [ "$PATH_PY" = "$SYS_PYTHON" ] && ! xcode-select -p >/dev/null 2>&1; then
     quem="e o do sistema, sem as ferramentas de linha de comando"
+  elif [ -n "$PATH_PY" ] && "$PATH_PY" -c 'import os,sys,sysconfig; sys.exit(os.path.exists(os.path.join(sysconfig.get_paths()["stdlib"],"EXTERNALLY-MANAGED")))' </dev/null >/dev/null 2>&1; then
+    pip_ok=1
   fi
-  mark_fail "numpy (voz unificada): o python3 do PATH (${PATH_PY:-nenhum}) nao e o do Homebrew e $quem; o do Homebrew tem o numpy ($BREW_NUMPY_PY)." \
-    "ponha o Python do Homebrew na frente do PATH: export PATH=\"$dir:\$PATH\" (no ~/.zprofile), ou instale o numpy nesse python3: ${PATH_PY:-python3} -m pip install numpy"
+  [ "$pip_ok" = 1 ] && fix="$fix, ou instale o numpy nesse python3: $PATH_PY -m pip install numpy"
+  mark_fail "numpy (voz unificada): o python3 do PATH (${PATH_PY:-nenhum}) nao e o do Homebrew e $quem; o do Homebrew tem o numpy ($BREW_NUMPY_PY)." "$fix"
 }
 
 # O tsa-editor voz-unificada (DEC-AV-06, PIPE-042) mede o espectro com o numpy. A formula

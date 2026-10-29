@@ -70,6 +70,8 @@ case "$*" in
     exit 0 ;;
   *python_version*) echo 3.14.0 ;;
   *"import PIL"*) [ -e "$FAKE_STATE/pillow" ] || exit 1 ;;
+  # pip permitido (sai 0) salvo quando o estado py_gerenciado simula o EXTERNALLY-MANAGED
+  *EXTERNALLY-MANAGED*) [ -e "$FAKE_STATE/py_gerenciado" ] && exit 1; exit 0 ;;
   *"import numpy"*) [ -e "$FAKE_STATE/numpy" ] && exit 0
     case "$0" in */prefix/*) [ -e "$FAKE_STATE/numpy_brew" ] || exit 1 ;; *) exit 1 ;; esac ;;
 esac
@@ -220,7 +222,8 @@ case "$1" in
     [ "$f2" = --cask ] && f=--cask
     case "$f" in
       python@3.14) cp "$FAKE_TPL/python3" "$P/bin/python3"; cp "$FAKE_TPL/python3" "$P/bin/python3.14"
-        mkdir -p "$P/opt/python@3.14/libexec/bin"; cp "$FAKE_TPL/python3" "$P/opt/python@3.14/libexec/bin/python" ;;
+        mkdir -p "$P/opt/python@3.14/bin" "$P/opt/python@3.14/libexec/bin"
+        cp "$FAKE_TPL/python3" "$P/opt/python@3.14/bin/python3"; cp "$FAKE_TPL/python3" "$P/opt/python@3.14/libexec/bin/python" ;;
       python@3.12) mkdir -p "$P/opt/python@3.12/bin"
         cp "$FAKE_TPL/python3.12" "$P/opt/python@3.12/bin/python3.12"; cp "$FAKE_TPL/python3.12" "$P/bin/python3.12" ;;
       node) cp "$FAKE_TPL/node" "$P/bin/node" ;;
@@ -280,6 +283,8 @@ setup(){
       mac_intel) cp "$TPL/uname-intel" "$S/userbin/uname" ;;
       pillow) touch "$S/state/pillow" ;;
       numpy) touch "$S/state/numpy" ;;
+      # python3 do PATH gerenciado por outro gestor (EXTERNALLY-MANAGED): o pip recusa
+      py_gerenciado) touch "$S/state/py_gerenciado" ;;
       # python3 do PATH e o do brew (prefix/bin), com o keg do python@3.14
       py_brew) cp "$TPL/python3" "$S/prefix/bin/python3"; mkdir -p "$S/prefix/opt/python@3.14/libexec/bin"
         cp "$TPL/python3" "$S/prefix/opt/python@3.14/libexec/bin/python" ;;
@@ -451,6 +456,7 @@ check "2a: nao reinstala" '[ -z "$(brew_changes)" ]'
 # O python3 do PATH continua o do sistema, a frente do brew: o tsa-editor cairia nele. O numpy
 # fica pendente (saida 1), sem executar o python do sistema, e o resumo diz o que fazer.
 check "2a: numpy pendente, sem rodar o python do sistema" '[ $RC2 = 1 ] && ! grep -q "^syspython3" "$S/log" && out_has "e o do sistema, sem as ferramentas de linha de comando"'
+check "2a: so o PATH, sem o pip do python do sistema" 'out_has "export PATH=\"$S/prefix/opt/python@3.14/bin:" && ! out_has "pip install numpy"'
 
 echo "11. porta 5432 ocupada sem psql, duas execucoes"
 setup port brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow numpy voicestudio auto-editor capcut-cli
@@ -736,9 +742,17 @@ setup numpydiverge brew python3 brew_py_numpy node psql pg_isready pg_on ffmpeg_
 run
 check "nao aprova o numpy" '! out_has "numpy (voz unificada): ja estava pronto"'
 check "diz que o python3 do PATH e outro" 'out_has "o python3 do PATH ($S/userbin/python3) nao e o do Homebrew"'
-check "da o PATH do Python do brew" 'out_has "export PATH=\"$S/prefix/opt/python@3.14/libexec/bin:"'
+check "da o PATH do keg, onde mora o python3" 'out_has "export PATH=\"$S/prefix/opt/python@3.14/bin:"'
+check "nao manda o libexec/bin, que nao tem python3" '! out_has "libexec/bin:"'
 check "da o pip do python3 do PATH" 'out_has "$S/userbin/python3 -m pip install numpy"'
 check "nao reinstala pelo brew" '! grep -q "^brew install.*numpy" "$S/log"'
+
+echo "34f. python3 do PATH gerenciado (EXTERNALLY-MANAGED), Python do brew com numpy"
+setup numpygerenciado brew python3 py_gerenciado brew_py_numpy node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
+run
+check "diz que o python3 do PATH e outro" 'out_has "o python3 do PATH ($S/userbin/python3) nao e o do Homebrew"'
+check "da so o PATH do keg" 'out_has "export PATH=\"$S/prefix/opt/python@3.14/bin:"'
+check "nao sugere o pip" '! out_has "pip install numpy"'
 
 echo "34e. python3 achado nao e do brew e o python@3.14 nao esta: instala e explica"
 setup numpysembrewpy brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
