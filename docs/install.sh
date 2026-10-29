@@ -6,7 +6,7 @@
 #    fechar antes da troca (quit, nunca kill -9), reabre depois e confere, no fim, se o
 #    DNA ativo e o do app novo: o DNA embutido so e aplicado quando o app abre.
 # 2. Prepara o Mac para o simulador ACE, para a leitura de midia e para o ACE Audiovisual:
-#    Python 3.10+, Node, PostgreSQL ligado, ffmpeg (com o filtro drawtext), pillow,
+#    Python 3.10+, Node, PostgreSQL ligado, ffmpeg (com o filtro drawtext), pillow, numpy,
 #    Antigravity CLI (agy), yt-dlp, whisper-cpp, o modelo de transcricao, o Handy e o
 #    VoiceStudio. So instala o que falta, e so atualiza o yt-dlp velho.
 #    Para o ACE Dev: a skill RES v0.4.0 (SHA-256 conferido) e o comando tsa-rea-local, que
@@ -87,6 +87,8 @@ HANDY_OK=0   # 1 quando o Handy esta no lugar; so ai o passo guiado aparece
 FFMPEG_FULL_FORMULA="ffmpeg-full"   # keg-only: nao entra no bin do brew sozinha
 # A formula pillow poe o PIL no site-packages do Python do brew, nunca no do sistema.
 PILLOW_FORMULA="pillow"
+# A formula numpy, do mesmo jeito: o tsa-editor voz-unificada importa o numpy no Python do brew.
+NUMPY_FORMULA="numpy"
 # VoiceStudio: clonagem de voz e dublagem local. App separado e AGPL, roda fora do TSA
 # e nunca entra dentro dele. Existem repositorios falsos com o mesmo nome distribuindo
 # binario com malware: so o endereco abaixo vale, e o DMG so entra depois do sha256.
@@ -655,6 +657,42 @@ ensure_pillow(){
     mark_ok "pillow (texto como imagem): instalado ($PIL_PY)"
   else
     mark_fail "pillow (texto como imagem): a instalacao falhou." "$fix"
+  fi
+}
+
+# Onde o numpy esta importavel: no Python que o script achou ou no Python do brew.
+NUMPY_PY=""
+find_numpy(){
+  local p prefix="$BREW_PREFIX"
+  NUMPY_PY=""
+  # so olha, nunca chama o brew: uma conferencia nao pode mexer na maquina
+  if [ -z "$prefix" ] && [ -n "$BREW" ]; then prefix="$(dirname "$(dirname "$BREW")")"; fi
+  for p in "$PY_FOUND" "$prefix/opt/$PY_FORMULA/libexec/bin/python"; do
+    [ -n "$p" ] && [ -x "$p" ] || continue
+    if "$p" -c 'import numpy' </dev/null >/dev/null 2>&1; then
+      NUMPY_PY="$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# O tsa-editor voz-unificada (DEC-AV-06, PIPE-042) mede o espectro com o numpy. A formula
+# numpy do brew instala no site-packages do Python do brew; o Python do sistema fica intocado.
+ensure_numpy(){
+  if find_numpy; then
+    mark_ok "numpy (voz unificada): ja estava pronto ($NUMPY_PY)"
+    return 0
+  fi
+  local fix="brew install $NUMPY_FORMULA"
+  if ! ensure_brew; then
+    mark_fail "numpy (voz unificada): nao encontrado." "instale o Homebrew e rode: $fix"
+    return 1
+  fi
+  if brew_install "$NUMPY_FORMULA" && find_numpy; then
+    mark_ok "numpy (voz unificada): instalado ($NUMPY_PY)"
+  else
+    mark_fail "numpy (voz unificada): a instalacao falhou." "$fix"
   fi
 }
 
@@ -1649,6 +1687,7 @@ prepare_simulator(){
   ensure_ffmpeg || true
   ensure_drawtext || true
   ensure_pillow || true
+  ensure_numpy || true
   ensure_agy || true
   ensure_higgsfield || true
   ensure_autoeditor || true

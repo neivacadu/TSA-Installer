@@ -20,6 +20,7 @@ Você não precisa de conta no GitHub nem do `gh`. O instalador faz duas coisas.
    - `ffmpeg`, para a leitura de mídia;
    - `ffmpeg` com o filtro `drawtext`, para escrever texto na tela;
    - `pillow`, que gera o texto como imagem quando falta o `drawtext`;
+   - `numpy`, que o `tsa-editor voz-unificada` usa para medir o espectro da narração;
    - `agy`, o Antigravity CLI do Google, que lê vídeo;
    - `yt-dlp`, para baixar vídeo de rede social;
    - `whisper-cli` (fórmula `whisper-cpp`), que transcreve o áudio;
@@ -28,7 +29,7 @@ Você não precisa de conta no GitHub nem do `gh`. O instalador faz duas coisas.
    - o Handy, app de ditado por microfone com histórico local;
    - o VoiceStudio, app de clonagem de voz e dublagem local.
 
-   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node`, `postgresql@16`, `ffmpeg`, `ffmpeg-full`, `pillow`, `yt-dlp`, `whisper-cpp` e o cask `handy`. Ele liga o PostgreSQL 16 com `brew services`. O `agy` vem do instalador oficial do Google (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), e só depois de o endereço responder 200. O que já existe fica como está. O instalador não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
+   O instalador só instala o que falta, pelo Homebrew: `python@3.14`, `node`, `postgresql@16`, `ffmpeg`, `ffmpeg-full`, `pillow`, `numpy`, `yt-dlp`, `whisper-cpp` e o cask `handy`. Ele liga o PostgreSQL 16 com `brew services`. O `agy` vem do instalador oficial do Google (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), e só depois de o endereço responder 200. O que já existe fica como está. O instalador não cria banco, usuário nem senha. O banco do simulador é criado pelo app na primeira simulação.
 
    **O `yt-dlp` é o único que o instalador atualiza.** Quando o YouTube muda, a versão velha passa a dar `HTTP Error 403`. Se `brew outdated yt-dlp` acusa atraso, o instalador roda `brew upgrade yt-dlp`. Nenhum outro programa é atualizado.
 
