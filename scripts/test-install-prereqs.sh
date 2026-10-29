@@ -54,7 +54,9 @@ fake(){ # nome, corpo
   printf '#!/bin/bash\necho "%s $*" >>"$FAKE_LOG"\n%s\n' "$1" "$2" >"$TPL/$1"
   chmod +x "$TPL/$1"
 }
-# o import do PIL so passa depois que o brew instala a formula pillow; o do numpy, a numpy.
+# o import do PIL so passa depois que o brew instala a formula pillow. O numpy: o estado
+# numpy vale para todo Python (ja vinha instalado); o numpy_brew, posto pela formula numpy,
+# so vale para o Python do brew, o que mora em .../prefix/.
 # tsa_editor.py --instalar: FAKE_EDITOR_RC forca o codigo de saida; sem ele, a primeira
 # vez instala e grava o estado, e as seguintes respondem que ja esta instalada.
 fake python3 '
@@ -68,7 +70,8 @@ case "$*" in
     exit 0 ;;
   *python_version*) echo 3.14.0 ;;
   *"import PIL"*) [ -e "$FAKE_STATE/pillow" ] || exit 1 ;;
-  *"import numpy"*) [ -e "$FAKE_STATE/numpy" ] || exit 1 ;;
+  *"import numpy"*) [ -e "$FAKE_STATE/numpy" ] && exit 0
+    case "$0" in */prefix/*) [ -e "$FAKE_STATE/numpy_brew" ] || exit 1 ;; *) exit 1 ;; esac ;;
 esac
 exit 0'
 fake syspython3 'exit 1'
@@ -211,8 +214,13 @@ case "$1" in
   shellenv) echo "export PATH=\"$P/bin:\$PATH\"" ;;
   install)
     [ -n "${FAKE_BREWFAIL:-}" ] && [ "$2" = "$FAKE_BREWFAIL" ] && exit 1
-    case "$2" in
-      python@3.14) cp "$FAKE_TPL/python3" "$P/bin/python3"; cp "$FAKE_TPL/python3" "$P/bin/python3.14" ;;
+    # varias formulas num install so: cada uma pelo mesmo case; --cask le o $3
+    f2="$2"; shift
+    for f in "$@"; do
+    [ "$f2" = --cask ] && f=--cask
+    case "$f" in
+      python@3.14) cp "$FAKE_TPL/python3" "$P/bin/python3"; cp "$FAKE_TPL/python3" "$P/bin/python3.14"
+        mkdir -p "$P/opt/python@3.14/libexec/bin"; cp "$FAKE_TPL/python3" "$P/opt/python@3.14/libexec/bin/python" ;;
       python@3.12) mkdir -p "$P/opt/python@3.12/bin"
         cp "$FAKE_TPL/python3.12" "$P/opt/python@3.12/bin/python3.12"; cp "$FAKE_TPL/python3.12" "$P/bin/python3.12" ;;
       node) cp "$FAKE_TPL/node" "$P/bin/node" ;;
@@ -220,15 +228,17 @@ case "$1" in
       ffmpeg-full) mkdir -p "$P/opt/ffmpeg-full/bin"
         cp "$FAKE_TPL/ffmpeg-full" "$P/opt/ffmpeg-full/bin/ffmpeg" ;;
       pillow) touch "$FAKE_STATE/pillow" ;;
-      numpy) touch "$FAKE_STATE/numpy" ;;
+      numpy) touch "$FAKE_STATE/numpy_brew" ;;
       yt-dlp) cp "$FAKE_TPL/yt-dlp" "$P/bin/yt-dlp" ;;
       whisper-cpp) cp "$FAKE_TPL/whisper-cli" "$P/bin/whisper-cli" ;;
       auto-editor) cp "$FAKE_TPL/auto-editor" "$P/bin/auto-editor" ;;
       --cask) [ -n "${FAKE_CASKFAIL:-}" ] && exit 1
-        case "$3" in handy) mkdir -p "$FAKE_HANDY_APP" ;; esac ;;
+        case "$2" in handy) mkdir -p "$FAKE_HANDY_APP" ;; esac ;;
       postgresql@16) mkdir -p "$P/opt/postgresql@16/bin"
         cp "$FAKE_TPL/psql" "$FAKE_TPL/pg_isready" "$FAKE_TPL/createdb" "$P/opt/postgresql@16/bin/" ;;
-    esac ;;
+    esac
+    [ "$f2" = --cask ] && break
+    done ;;
   outdated) [ -e "$FAKE_STATE/ytdlp_velho" ] && echo "$2 (2026.03.03) < 2026.08.19" ;;
   upgrade) q="$(command -v "$2" 2>/dev/null)"; [ -n "$q" ] && cp "$FAKE_TPL/$2" "$q"
     rm -f "$FAKE_STATE/ytdlp_velho" ;;
@@ -270,6 +280,12 @@ setup(){
       mac_intel) cp "$TPL/uname-intel" "$S/userbin/uname" ;;
       pillow) touch "$S/state/pillow" ;;
       numpy) touch "$S/state/numpy" ;;
+      # python3 do PATH e o do brew (prefix/bin), com o keg do python@3.14
+      py_brew) cp "$TPL/python3" "$S/prefix/bin/python3"; mkdir -p "$S/prefix/opt/python@3.14/libexec/bin"
+        cp "$TPL/python3" "$S/prefix/opt/python@3.14/libexec/bin/python" ;;
+      # o Python do brew ja tem o numpy; o python3 do PATH, nao
+      brew_py_numpy) mkdir -p "$S/prefix/opt/python@3.14/libexec/bin"
+        cp "$TPL/python3" "$S/prefix/opt/python@3.14/libexec/bin/python"; touch "$S/state/numpy_brew" ;;
       py312_keg) mkdir -p "$S/prefix/opt/python@3.12/bin"
         cp "$TPL/python3.12" "$S/prefix/opt/python@3.12/bin/python3.12" ;;
       ffmpeg_drawtext) cp "$TPL/ffmpeg-full" "$S/userbin/ffmpeg" ;;
@@ -431,7 +447,10 @@ run2 TSA_SYS_PYTHON="$S/userbin/python3"
 check "1a: nao executa o python do sistema" '! grep -q "^syspython3" "$S/log1"'
 check "1a: consulta o xcode-select" 'grep -q "^xcode-select" "$S/log1"'
 check "1a: instala o Python" '[ "$(brew_changes "$S/log1")" = "brew install python@3.14;" ]'
-check "2a: nao reinstala" '[ $RC2 = 0 ] && [ -z "$(brew_changes)" ]'
+check "2a: nao reinstala" '[ -z "$(brew_changes)" ]'
+# O python3 do PATH continua o do sistema, a frente do brew: o tsa-editor cairia nele. O numpy
+# fica pendente (saida 1), sem executar o python do sistema, e o resumo diz o que fazer.
+check "2a: numpy pendente, sem rodar o python do sistema" '[ $RC2 = 1 ] && ! grep -q "^syspython3" "$S/log" && out_has "e o do sistema, sem as ferramentas de linha de comando"'
 
 echo "11. porta 5432 ocupada sem psql, duas execucoes"
 setup port brew python3 node ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow numpy voicestudio auto-editor capcut-cli
@@ -475,7 +494,7 @@ echo "15. faltando tudo, segunda execucao nao reinstala"
 setup again brew curl hdiutil ditto xattr agy_login modelo
 run2 TSA_EDITOR_VIDEO=sim TSA_EDITOR_PY=/nao/existe
 check "1a: instala Python, Node, PostgreSQL, ffmpeg, ffmpeg-full, pillow, auto-editor, yt-dlp, whisper-cpp e Handy" \
-  '[ "$(brew_changes "$S/log1")" = "brew install python@3.14;brew install node;brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;brew install ffmpeg;brew install ffmpeg-full;brew install pillow;brew install numpy;brew install auto-editor;brew install yt-dlp;brew install whisper-cpp;brew install --cask handy;" ]'
+  '[ "$(brew_changes "$S/log1")" = "brew install python@3.14;brew install node;brew install postgresql@16;brew link --force postgresql@16;brew services start postgresql@16;brew install ffmpeg;brew install ffmpeg-full;brew install python@3.14 pillow;brew install python@3.14 numpy;brew install auto-editor;brew install yt-dlp;brew install whisper-cpp;brew install --cask handy;" ]'
 check "1a: instala o agy pelo instalador oficial" '[ -x "$S/home/.local/bin/agy" ]'
 check "1a: instala o VoiceStudio" '[ -d "$S/Applications/VoiceStudio.app" ]'
 check "1a: nao baixa o modelo, que ja estava pronto" '! grep -q "ggml-large-v3-turbo" "$S/log1"'
@@ -691,25 +710,42 @@ echo "34. sem pillow, duas execucoes"
 setup nopillow brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy numpy voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
-check "1a: instala so o pillow" '[ "$(brew_changes "$S/log1")" = "brew install pillow;" ]'
+check "1a: instala so o pillow, com o python@3.14" '[ "$(brew_changes "$S/log1")" = "brew install python@3.14 pillow;" ]'
 check "1a: resumo diz instalado e em qual Python" 'grep -q "pillow (texto como imagem): instalado (" "$S/out1"'
 check "2a: nao reinstala" '[ -z "$(brew_changes)" ]'
 check "2a: resumo diz ja estava pronto" 'out_has "pillow (texto como imagem): ja estava pronto"'
 
-echo "34b. sem numpy, duas execucoes"
-setup nonumpy brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
+echo "34b. sem numpy, python3 do PATH e o do brew: duas execucoes"
+setup nonumpy brew py_brew node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
 run2
 check "sai 0 nas duas" '[ $RC1 = 0 ] && [ $RC2 = 0 ]'
-check "1a: instala so o numpy" '[ "$(brew_changes "$S/log1")" = "brew install numpy;" ]'
-check "1a: resumo diz instalado e em qual Python" 'grep -q "numpy (voz unificada): instalado (" "$S/out1"'
+check "1a: instala o numpy com o python@3.14" '[ "$(brew_changes "$S/log1")" = "brew install python@3.14 numpy;" ]'
+check "1a: resumo diz instalado no python3 do PATH" 'grep -q "numpy (voz unificada): instalado ($S/prefix/bin/python3)" "$S/out1"'
 check "2a: nao reinstala" '[ -z "$(brew_changes)" ]'
 check "2a: resumo diz ja estava pronto" 'out_has "numpy (voz unificada): ja estava pronto"'
 
 echo "34c. sem numpy e sem brew: falha explicada, sem travar"
 setup nonumpybrew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio
 run
-check "resumo manda instalar o Homebrew e a formula" 'out_has "numpy (voz unificada): nao encontrado."'
+check "resumo diz nao encontrado" 'out_has "numpy (voz unificada): nao encontrado."'
+check "resumo da o comando com o python@3.14" 'out_has "rode: brew install python@3.14 numpy"'
 check "nao chama o brew" '[ -z "$(brew_changes)" ]'
+
+echo "34d. python3 do PATH sem numpy, Python do brew com numpy"
+setup numpydiverge brew python3 brew_py_numpy node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
+run
+check "nao aprova o numpy" '! out_has "numpy (voz unificada): ja estava pronto"'
+check "diz que o python3 do PATH e outro" 'out_has "o python3 do PATH ($S/userbin/python3) nao e o do Homebrew"'
+check "da o PATH do Python do brew" 'out_has "export PATH=\"$S/prefix/opt/python@3.14/libexec/bin:"'
+check "da o pip do python3 do PATH" 'out_has "$S/userbin/python3 -m pip install numpy"'
+check "nao reinstala pelo brew" '! grep -q "^brew install.*numpy" "$S/log"'
+
+echo "34e. python3 achado nao e do brew e o python@3.14 nao esta: instala e explica"
+setup numpysembrewpy brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow voicestudio auto-editor capcut-cli
+run
+check "instala o python@3.14 com o numpy" '[ "$(brew_changes)" = "brew install python@3.14 numpy;" ]'
+check "nao aprova o numpy" '! out_has "numpy (voz unificada): instalado"'
+check "diz que o python3 do PATH e outro" 'out_has "o python3 do PATH ($S/userbin/python3) nao e o do Homebrew"'
 
 echo "35. VoiceStudio ja instalado: nao baixa nada"
 setup vsok brew python3 node psql pg_isready pg_on ffmpeg_drawtext agy agy_login yt-dlp whisper-cli modelo handy pillow numpy voicestudio curl hdiutil ditto xattr auto-editor capcut-cli

@@ -648,49 +648,76 @@ ensure_pillow(){
     mark_ok "pillow (texto como imagem): ja estava pronto ($PIL_PY)"
     return 0
   fi
-  local fix="brew install $PILLOW_FORMULA"
+  # a formula pillow nao traz o python@3.14 (e so dependencia de build): os dois no mesmo comando
+  local fix="brew install $PY_FORMULA $PILLOW_FORMULA"
   if ! ensure_brew; then
     mark_fail "pillow (texto como imagem): nao encontrado." "instale o Homebrew e rode: $fix"
     return 1
   fi
-  if brew_install "$PILLOW_FORMULA" && find_pillow; then
+  if brew_install "$PY_FORMULA" "$PILLOW_FORMULA" && find_pillow; then
     mark_ok "pillow (texto como imagem): instalado ($PIL_PY)"
   else
     mark_fail "pillow (texto como imagem): a instalacao falhou." "$fix"
   fi
 }
 
-# Onde o numpy esta importavel: no Python que o script achou ou no Python do brew.
+# O tsa-editor roda por `#!/usr/bin/env python3` e o app chama `python3`: vale o python3 do
+# PATH, nao o do brew por tras dele. NUMPY_PY so e preenchido quando esse python3 importa o
+# numpy. BREW_NUMPY_PY diz se o Python do brew tem o numpy, para explicar a divergencia.
 NUMPY_PY=""
+PATH_PY=""
+BREW_NUMPY_PY=""
 find_numpy(){
-  local p prefix="$BREW_PREFIX"
-  NUMPY_PY=""
+  local prefix="$BREW_PREFIX" brew_py
+  NUMPY_PY=""; BREW_NUMPY_PY=""
+  hash -r
+  PATH_PY="$(command -v python3 2>/dev/null)"
   # so olha, nunca chama o brew: uma conferencia nao pode mexer na maquina
   if [ -z "$prefix" ] && [ -n "$BREW" ]; then prefix="$(dirname "$(dirname "$BREW")")"; fi
-  for p in "$PY_FOUND" "$prefix/opt/$PY_FORMULA/libexec/bin/python"; do
-    [ -n "$p" ] && [ -x "$p" ] || continue
-    if "$p" -c 'import numpy' </dev/null >/dev/null 2>&1; then
-      NUMPY_PY="$p"
-      return 0
-    fi
-  done
+  brew_py="$prefix/opt/$PY_FORMULA/libexec/bin/python"
+  if [ -n "$prefix" ] && [ -x "$brew_py" ] && "$brew_py" -c 'import numpy' </dev/null >/dev/null 2>&1; then
+    BREW_NUMPY_PY="$brew_py"
+  fi
+  # sem as ferramentas de linha de comando, /usr/bin/python3 abre um aviso do macOS: nao executa
+  if [ "$PATH_PY" = "$SYS_PYTHON" ] && ! xcode-select -p >/dev/null 2>&1; then return 1; fi
+  if [ -n "$PATH_PY" ] && "$PATH_PY" -c 'import numpy' </dev/null >/dev/null 2>&1; then
+    NUMPY_PY="$PATH_PY"
+    return 0
+  fi
   return 1
+}
+
+# O brew tem o numpy, mas o python3 do PATH e outro (python.org, pyenv, conda, sistema).
+numpy_path_divergente(){
+  local dir quem="nao tem o numpy"; dir="$(dirname "$BREW_NUMPY_PY")"
+  if [ "$PATH_PY" = "$SYS_PYTHON" ] && ! xcode-select -p >/dev/null 2>&1; then
+    quem="e o do sistema, sem as ferramentas de linha de comando"
+  fi
+  mark_fail "numpy (voz unificada): o python3 do PATH (${PATH_PY:-nenhum}) nao e o do Homebrew e $quem; o do Homebrew tem o numpy ($BREW_NUMPY_PY)." \
+    "ponha o Python do Homebrew na frente do PATH: export PATH=\"$dir:\$PATH\" (no ~/.zprofile), ou instale o numpy nesse python3: ${PATH_PY:-python3} -m pip install numpy"
 }
 
 # O tsa-editor voz-unificada (DEC-AV-06, PIPE-042) mede o espectro com o numpy. A formula
 # numpy do brew instala no site-packages do Python do brew; o Python do sistema fica intocado.
+# A formula numpy nao traz o python@3.14 (e so dependencia de build): os dois no mesmo comando.
 ensure_numpy(){
   if find_numpy; then
     mark_ok "numpy (voz unificada): ja estava pronto ($NUMPY_PY)"
     return 0
   fi
-  local fix="brew install $NUMPY_FORMULA"
+  if [ -n "$BREW_NUMPY_PY" ]; then
+    numpy_path_divergente
+    return 1
+  fi
+  local fix="brew install $PY_FORMULA $NUMPY_FORMULA"
   if ! ensure_brew; then
     mark_fail "numpy (voz unificada): nao encontrado." "instale o Homebrew e rode: $fix"
     return 1
   fi
-  if brew_install "$NUMPY_FORMULA" && find_numpy; then
+  if brew_install "$PY_FORMULA" "$NUMPY_FORMULA" && find_numpy; then
     mark_ok "numpy (voz unificada): instalado ($NUMPY_PY)"
+  elif [ -n "$BREW_NUMPY_PY" ]; then
+    numpy_path_divergente
   else
     mark_fail "numpy (voz unificada): a instalacao falhou." "$fix"
   fi
